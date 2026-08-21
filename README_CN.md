@@ -92,8 +92,8 @@ pip install -r requirements.txt
 
 # 2. 将你的 gemini_web2api.py 复制到根目录（可选，若已有独立运行实例则跳过）
 
-# 3. 一键启动 4 个 Worker 实例并挂载订阅链接
-python3 run_local.py --workers 4 --port 8081 --sub "https://your-subscription.yaml" --debug
+# 3. 一键启动 4 个 Worker 实例并挂载节点订阅链接（支持 Clash YAML 或 V2Ray / Base64 / VLESS / SS 订阅链接）
+python3 run_local.py --workers 4 --port 8081 --sub "https://example.com/api/v1/client/subscribe?token=xxx" --debug
 ```
 
 ### 方式二：Docker / Docker Compose 部署
@@ -102,7 +102,7 @@ python3 run_local.py --workers 4 --port 8081 --sub "https://your-subscription.ya
 # Docker 运行
 docker run -d -p 8081:8081 \
   -e WORKER_COUNT=4 \
-  -e PROVIDER_URLS="https://your-subscription.yaml" \
+  -e PROVIDER_URLS="https://example.com/api/v1/client/subscribe?token=xxx" \
   -e DEBUG=true \
   --name gemflow gemflow:latest
 
@@ -165,7 +165,7 @@ print()
 | :--- | :--- | :--- |
 | `PORT` / `-p` | `8081` | gemflow 网关监听端口 |
 | `WORKER_COUNT` / `-w` | `1` | 后端实例数。为 `1` 时直连；为 `N` 时开启多实例多线路负载 |
-| `PROVIDER_URLS` / `-s` | `""` | 代理订阅链接（支持多行填写） |
+| `PROVIDER_URLS` / `-s` | `""` | 代理订阅链接（支持 Clash YAML 配置链接以及标准 V2Ray / Base64 / VMess / VLESS / Trojan 格式订阅，支持多行填写） |
 | `DEBUG` / `--debug` | `false` | 是否开启详细调试日志 (`true`/`1`/`yes`) |
 
 ---

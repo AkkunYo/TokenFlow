@@ -11,6 +11,6 @@ services:
       - PORT=8081
       - WORKER_COUNT=4               # 运行实例数 (Worker 1 直连, Worker 2..N 走代理)
       - DEBUG=true                   # 开启路由与指纹调试日志
-      # - PROVIDER_URLS=https://example.com/sub.yaml # 填入你的节点订阅链接 (多行或单个)
+      # - PROVIDER_URLS=https://example.com/api/v1/client/subscribe?token=xxx # 填入你的节点订阅链接 (支持 Clash YAML 或 V2Ray/Base64/VLESS，多行或单个)
     volumes:
       - ./instances:/app/instances

@@ -94,8 +94,8 @@ git clone https://github.com/your-username/gemflow.git
 cd gemflow
 pip install -r requirements.txt
 
-# Start 4 workers with subscription and debug logging
-python3 run_local.py --workers 4 --port 8081 --sub "https://your-subscription-url.yaml" --debug
+# Start 4 workers with subscription (supports Clash YAML or V2Ray / Base64 / VLESS / SS) and debug logging
+python3 run_local.py --workers 4 --port 8081 --sub "https://example.com/api/v1/client/subscribe?token=xxx" --debug
 ```
 
 ### 2. Docker & Docker Compose
@@ -104,7 +104,7 @@ python3 run_local.py --workers 4 --port 8081 --sub "https://your-subscription-ur
 # Direct run with Docker
 docker run -d -p 8081:8081 \
   -e WORKER_COUNT=4 \
-  -e PROVIDER_URLS="https://your-subscription-url.yaml" \
+  -e PROVIDER_URLS="https://example.com/api/v1/client/subscribe?token=xxx" \
   -e DEBUG=true \
   --name gemflow gemflow:latest
 
@@ -167,7 +167,7 @@ print()
 | :--- | :--- | :--- |
 | `PORT` | `8081` | Gateway HTTP listen entrypoint |
 | `WORKER_COUNT` | `1` | Number of worker instances to launch (`1` = Direct only, `N` = 1 Direct + N-1 Proxy workers) |
-| `PROVIDER_URLS` | `""` | Proxy subscription URLs (supports multi-line) |
+| `PROVIDER_URLS` | `""` | Proxy subscription URLs (supports Clash YAML links as well as V2Ray / Base64 / VMess / VLESS / Trojan subscription formats, multi-line supported) |
 | `DEBUG` | `false` | Enable verbose logging (`true`/`1`/`yes`) |
 
 ---
