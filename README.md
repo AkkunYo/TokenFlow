@@ -17,21 +17,6 @@
 
 ---
 
-## 📊 Benchmark & KV Cache Locality
-
-Google Gemini models implement **Prompt KV Prefix Caching**. Random or naive round-robin dispatch across different IPs or upstream sessions invalidates the prefix cache, causing severe First-Token Latency (TTFT) degradation.
-
-`gemflow` achieves **~70%+ reduction in TTFT** by deterministically pinning conversational contexts to the same backend worker and egress proxy:
-
-| Metric | Random / Round-Robin Gateway | `gemflow` Sticky-Session Gateway | Optimization |
-| :--- | :---: | :---: | :---: |
-| **First-Token Latency (TTFT, Turn 2+)** | `1.85s ~ 2.40s` | **`0.42s ~ 0.65s`** | ⚡ **~72% Faster** |
-| **Prefix Cache Hit Rate** | < 25% | **> 95%** | 🎯 **Optimal Cache Locality** |
-| **429 Rate Limit Failover Time** | Manual / Request Fails | **< 0.1s Auto Failover** | 🛡️ **Zero Downtime** |
-| **Multi-IP Egress Scaling** | Single / Static IP | **N-Isolated Proxy Tunnels** | 🌐 **High Capacity** |
-
----
-
 ## ✨ Key Features
 
 1. 🎯 **Prompt KV Cache Locality (Sticky Session)**:
@@ -50,6 +35,21 @@ Google Gemini models implement **Prompt KV Prefix Caching**. Random or naive rou
    - Full passthrough for SSE (Server-Sent Events) and chunked transfer encoding.
 6. 🔍 **Real-Time Debug Visibility**:
    - Toggle `DEBUG=true` to monitor session fingerprints, routing decisions (`STICKY` vs `LEAST_CONN`), egress nodes, and response latencies.
+
+---
+
+## 📊 Benchmark & KV Cache Locality
+
+Google Gemini models implement **Prompt KV Prefix Caching**. Random or naive round-robin dispatch across different IPs or upstream sessions invalidates the prefix cache, causing severe First-Token Latency (TTFT) degradation.
+
+`gemflow` achieves **~70%+ reduction in TTFT** by deterministically pinning conversational contexts to the same backend worker and egress proxy:
+
+| Metric | Random / Round-Robin Gateway | `gemflow` Sticky-Session Gateway | Optimization |
+| :--- | :---: | :---: | :---: |
+| **First-Token Latency (TTFT, Turn 2+)** | `1.85s ~ 2.40s` | **`0.42s ~ 0.65s`** | ⚡ **~72% Faster** |
+| **Prefix Cache Hit Rate** | < 25% | **> 95%** | 🎯 **Optimal Cache Locality** |
+| **429 Rate Limit Failover Time** | Manual / Request Fails | **< 0.1s Auto Failover** | 🛡️ **Zero Downtime** |
+| **Multi-IP Egress Scaling** | Single / Static IP | **N-Isolated Proxy Tunnels** | 🌐 **High Capacity** |
 
 ---
 
@@ -168,6 +168,7 @@ print()
 | `PORT` | `8081` | Gateway HTTP listen entrypoint |
 | `WORKER_COUNT` | `1` | Number of worker instances to launch (`1` = Direct only, `N` = 1 Direct + N-1 Proxy workers) |
 | `PROVIDER_URLS` | `""` | Proxy subscription URLs (supports Clash YAML links as well as V2Ray / Base64 / VMess / VLESS / Trojan subscription formats, multi-line supported) |
+| `AUTO_UPDATE_UPSTREAM` | `true` | Automatically fetch latest `gemini_web2api.py` on container/script startup |
 | `DEBUG` | `false` | Enable verbose logging (`true`/`1`/`yes`) |
 
 ---
@@ -176,8 +177,41 @@ print()
 
 `gemflow` is a custom-engineered intelligent load balancing and routing gateway built on top of and integrating with the following outstanding open-source projects:
 
-- 🔹 **[gemini-web2api](https://github.com/fatpandabb/gemini-web2api)**: Upstream service provider converting Gemini Web sessions into standard OpenAI-compatible API endpoints.
+- 🔹 **[gemini-web2api](https://github.com/Sophomoresty/gemini-web2api)**: Upstream service provider converting Gemini Web sessions into standard OpenAI-compatible API endpoints.
 - 🔹 **[Mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo)**: High-performance rule-based proxy kernel powering multi-egress routing and latency testing.
+
+---
+
+## 📋 Runtime Logs & Visibility
+
+### 1. Worker Egress IP Status Inspection
+
+On startup or status check, the gateway reports port, network mode, and geo-IP information for all workers:
+
+```text
+========== [Worker Egress IP Status @ 2026-08-21 23:15:25] ==========
+[Worker-1 : Port 9001 : DIRECT (Native)] -> United States (Ashburn) - IP: 3.216.155.203 [Amazon Technologies Inc.]
+[Worker-2 : Port 9002 : Proxy (http://127.0.0.1:19002)] -> United States (Reston) - IP: 104.28.153.225 [Cloudflare, Inc.]
+[Worker-3 : Port 9003 : Proxy (http://127.0.0.1:19003)] -> United States (Reston) - IP: 104.28.153.194 [Cloudflare, Inc.]
+[Worker-4 : Port 9004 : Proxy (http://127.0.0.1:19004)] -> United States (Reston) - IP: 104.28.167.43 [Cloudflare, Inc.]
+[Worker-5 : Port 9005 : Proxy (http://127.0.0.1:19005)] -> United States (Reston) - IP: 104.28.157.167 [Cloudflare, Inc.]
+[Worker-6 : Port 9006 : Proxy (http://127.0.0.1:19006)] -> United States (Reston) - IP: 104.28.157.167 [Cloudflare, Inc.]
+======================================================================
+```
+
+### 2. Real-Time Routing Logs (`DEBUG=true`)
+
+Enable `DEBUG=true` to monitor real-time session fingerprints, routing decisions (`STICKY` vs `LEAST_CONN`), and response times:
+
+```text
+# 1. New session dispatch -> Least-connection round-robin to Worker-2
+[DEBUG @ 21:05:10] [Req #1] [POST] /v1/chat/completions | Model: 'gemini-2.5-flash' | Session: ctx_8a3f912b41de | Prompt: "Explain quantum computing..." -> Selected: Worker-2 (Port 9002, Egress: http://127.0.0.1:19002, Route: LEAST_CONN, Active: 1)
+[DEBUG @ 21:05:12] [Req #1] Completed in 2.10s | HTTP 200 via Worker-2 (http://127.0.0.1:19002)
+
+# 2. Subsequent turn -> STICKY match on Worker-2 (Prompt KV cache hit, accelerated TTFT)
+[DEBUG @ 21:05:25] [Req #2] [POST] /v1/chat/completions | Model: 'gemini-2.5-flash' | Session: ctx_8a3f912b41de | Prompt: "Explain quantum computing..." -> Selected: Worker-2 (Port 9002, Egress: http://127.0.0.1:19002, Route: STICKY, Active: 1)
+[DEBUG @ 21:05:26] [Req #2] Completed in 1.15s | HTTP 200 via Worker-2 (http://127.0.0.1:19002)
+```
 
 ---
 

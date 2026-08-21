@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 获取版本号并写入 VERSION
+      - name: 获取版本号与构建时间
         run: |
           # 获取仓库最新 tag
           TAG=$(git tag --sort=-v:refname | head -n 1)
@@ -37,10 +37,14 @@ jobs:
             TAG="v$MAJOR.$MINOR.$PATCH"
           fi
 
+          BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
           # 写入环境变量
           echo "VERSION=$TAG" >> $GITHUB_ENV
+          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
           echo "$TAG" > VERSION
           echo "最终版本: $TAG"
+          echo "构建时间: $BUILD_TIME"
 
       - name: 运行单元测试
         run: |
@@ -65,6 +69,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            BUILD_VERSION=${{ env.VERSION }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
           tags: |
             registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
             registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:${{ env.VERSION }}

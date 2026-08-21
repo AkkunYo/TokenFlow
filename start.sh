@@ -9,6 +9,11 @@ WORKER_COUNT="${WORKER_COUNT:-1}"
 PROVIDER_URLS="${PROVIDER_URLS:-}"
 PORT="${PORT:-8081}"
 DEBUG="${DEBUG:-false}"
+BUILD_VERSION="${BUILD_VERSION:-unknown}"
+BUILD_TIME="${BUILD_TIME:-unknown}"
+AUTO_UPDATE_UPSTREAM="${AUTO_UPDATE_UPSTREAM:-true}"
+UPSTREAM_URL="${UPSTREAM_URL:-https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py}"
+UPSTREAM_MIRROR_URL="${UPSTREAM_MIRROR_URL:-https://ghfast.top/https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py}"
 WORKERS_JSON="$APP_DIR/workers.json"
 MIHOMO_CONFIG="$APP_DIR/mihomo.yaml"
 BASE_WORKER_PORT=9000
@@ -17,10 +22,46 @@ BASE_PROXY_PORT=19000
 echo "=================================================="
 echo "          Starting gemflow Gateway Engine        "
 echo "=================================================="
+echo "-> Image Version       : $BUILD_VERSION"
+echo "-> Image Build Time    : $BUILD_TIME"
 echo "-> Unified Listen Port : $PORT"
 echo "-> Target Worker Count : $WORKER_COUNT"
+echo "-> Auto Update Upstream: $AUTO_UPDATE_UPSTREAM"
 echo "-> Debug Logging Mode  : $DEBUG"
 echo "=================================================="
+
+# 0. 自动拉取/更新最新版 gemini_web2api.py
+TARGET_SCRIPT="$APP_DIR/gemini_web2api.py"
+if [ "$AUTO_UPDATE_UPSTREAM" = "true" ] || [ "$AUTO_UPDATE_UPSTREAM" = "1" ]; then
+    echo "[Upstream] Checking and downloading latest gemini_web2api.py..."
+    TMP_SCRIPT="/tmp/gemini_web2api_latest.py"
+    DOWNLOADED=false
+
+    # 优先从主源下载，失败则尝试镜像加速源
+    if curl -fsSL --connect-timeout 8 --max-time 20 "$UPSTREAM_URL" -o "$TMP_SCRIPT" && [ -s "$TMP_SCRIPT" ]; then
+        DOWNLOADED=true
+    elif [ -n "$UPSTREAM_MIRROR_URL" ] && curl -fsSL --connect-timeout 8 --max-time 20 "$UPSTREAM_MIRROR_URL" -o "$TMP_SCRIPT" && [ -s "$TMP_SCRIPT" ]; then
+        DOWNLOADED=true
+    fi
+
+    if [ "$DOWNLOADED" = "true" ]; then
+        # 简单验证下载的内容包含 python 关键字
+        if grep -q "import" "$TMP_SCRIPT" || grep -q "def " "$TMP_SCRIPT"; then
+            cp "$TMP_SCRIPT" "$TARGET_SCRIPT"
+            chmod +x "$TARGET_SCRIPT"
+            echo "[Upstream] Successfully updated gemini_web2api.py to latest version."
+        else
+            echo "[Upstream] Downloaded file invalid. Keeping existing script."
+        fi
+        rm -f "$TMP_SCRIPT"
+    else
+        if [ -f "$TARGET_SCRIPT" ]; then
+            echo "[Upstream] Notice: Network failed to fetch latest upstream. Using existing cached gemini_web2api.py."
+        else
+            echo "[Upstream] Error: Failed to fetch gemini_web2api.py and no local copy exists."
+        fi
+    fi
+fi
 
 # 1. 检查并准备订阅与 Mihomo 代理配置
 USE_PROXIES=false
@@ -63,10 +104,11 @@ EOF
 
     echo "[Mihomo] Starting mihomo daemon..."
     mihomo -d "$APP_DIR" -f "$MIHOMO_CONFIG" > /tmp/mihomo.log 2>&1 &
+    MIHOMO_PID=$!
     sleep 3
 
-    if pgrep -x "mihomo" > /dev/null; then
-        echo "[Mihomo] Started successfully."
+    if kill -0 "$MIHOMO_PID" 2>/dev/null; then
+        echo "[Mihomo] Started successfully (PID $MIHOMO_PID)."
         USE_PROXIES=true
     else
         echo "[Mihomo] Warning: mihomo failed to start. Falling back to direct native routing."
@@ -107,10 +149,10 @@ for ((i=0; i<WORKER_COUNT; i++)); do
     mkdir -p "$W_DIR"
 
     # 生成 config.json
-    W_PROXY="null"
+    W_PROXY=""
     if [ "$i" -gt 0 ] && [ "$USE_PROXIES" = "true" ]; then
         PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
-        W_PROXY="\"http://127.0.0.1:$PROXY_PORT\""
+        W_PROXY="http://127.0.0.1:$PROXY_PORT"
     fi
 
     cat <<EOF > "$W_DIR/config.json"
@@ -118,16 +160,16 @@ for ((i=0; i<WORKER_COUNT; i++)); do
   "port": $W_PORT,
   "api_keys": [],
   "cookie": "",
-  "proxy": $W_PROXY,
+  "proxy": $([ -n "$W_PROXY" ] && echo "\"$W_PROXY\"" || echo "null"),
   "log_requests": false
 }
 EOF
 
-    echo "[Worker-$W_ID] Starting gemini_web2api on port $W_PORT (proxy: $W_PROXY)..."
+    echo "[Worker-$W_ID] Starting gemini_web2api on port $W_PORT (proxy: ${W_PROXY:-DIRECT})..."
     (
         cd "$W_DIR"
         while true; do
-            python3 "$APP_DIR/gemini_web2api.py" config.json > "$APP_DIR/worker_$W_ID.log" 2>&1 || true
+            python3 "$APP_DIR/gemini_web2api.py" --port "$W_PORT" --config "$W_DIR/config.json" > "$APP_DIR/worker_$W_ID.log" 2>&1 || true
             sleep 1
         done
     ) &

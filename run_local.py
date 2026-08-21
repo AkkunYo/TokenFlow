@@ -16,12 +16,15 @@ import signal
 import shutil
 import argparse
 import subprocess
+import urllib.request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKERS_JSON = os.path.join(BASE_DIR, "workers.json")
 MIHOMO_CONFIG = os.path.join(BASE_DIR, "mihomo.yaml")
 TEMPLATE_YAML = os.path.join(BASE_DIR, "mihomo.template.yaml")
 SUB_FILE = os.path.join(BASE_DIR, "provider_urls.txt")
+UPSTREAM_PY_URL = "https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py"
+UPSTREAM_MIRROR_PY_URL = "https://ghfast.top/https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py"
 
 BASE_WORKER_PORT = 9000
 BASE_PROXY_PORT = 19000
@@ -29,7 +32,38 @@ BASE_PROXY_PORT = 19000
 PROCESSES = []
 
 
-def terminate_all(sig=None, frame=None):
+def fetch_latest_upstream(target_path, force=False):
+    """自动拉取 upstream gemini_web2api.py 保证最新"""
+    if os.path.exists(target_path) and not force:
+        return True
+
+    print("[gemflow] Fetching latest `gemini_web2api.py` from upstream repository...")
+    urls = [
+        os.environ.get("UPSTREAM_URL", UPSTREAM_PY_URL),
+        os.environ.get("UPSTREAM_MIRROR_URL", UPSTREAM_MIRROR_PY_URL),
+    ]
+
+    for u in urls:
+        if not u:
+            continue
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "gemflow-launcher"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    code = resp.read().decode("utf-8")
+                    if "import" in code and "def " in code:
+                        with open(target_path, "w", encoding="utf-8") as f:
+                            f.write(code)
+                        print(f"[gemflow] Successfully fetched latest upstream script -> {target_path}")
+                        return True
+        except Exception as e:
+            print(f"[gemflow] Fetch failed via {u}: {e}")
+
+    if os.path.exists(target_path):
+        print(f"[gemflow] Using existing cached `{target_path}`.")
+        return True
+
+    return False
     print("\n[gemflow] Shutting down all services...")
     for p in PROCESSES:
         try:
@@ -93,6 +127,7 @@ def main():
     parser.add_argument("--workers", "-w", type=int, default=1, help="Number of worker instances (default: 1)")
     parser.add_argument("--port", "-p", type=int, default=8081, help="LB Gateway entryport (default: 8081)")
     parser.add_argument("--sub", "-s", type=str, default="", help="Subscription URL or path to subscription file")
+    parser.add_argument("--update", action="store_true", help="Force update gemini_web2api.py from upstream repository")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logs")
     args = parser.parse_args()
 
@@ -154,8 +189,10 @@ def main():
     for w in workers:
         print(f"  -> Worker-{w['id']}: Port {w['port']} [Egress: {w['proxy'] or 'DIRECT'}]")
 
-    # 3. 启动 gemini_web2api 实例
+    # 3. 检查/拉取并启动 gemini_web2api 实例
     web2api_script = os.path.join(BASE_DIR, "gemini_web2api.py")
+    fetch_latest_upstream(web2api_script, force=args.update)
+
     if not os.path.exists(web2api_script):
         print(f"\n[Notice] {web2api_script} not found in root.")
         print("  Place your `gemini_web2api.py` into this folder to automatically launch workers,")
@@ -178,7 +215,7 @@ def main():
                 json.dump(w_cfg, f, indent=2)
 
             log_file = open(os.path.join(BASE_DIR, f"worker_{wid}.log"), "w")
-            p = subprocess.Popen([sys.executable, web2api_script, "config.json"],
+            p = subprocess.Popen([sys.executable, web2api_script, "--port", str(wport), "--config", os.path.join(wdir, "config.json")],
                                  cwd=wdir, stdout=log_file, stderr=log_file)
             PROCESSES.append(p)
             print(f"[Worker-{wid}] Started PID {p.pid} on port {wport}")
