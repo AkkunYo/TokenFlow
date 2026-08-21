@@ -20,6 +20,10 @@ This file provides architectural context and operational details for Claude or o
 - `config.json.example`: Upstream Gemini-Web2API worker configuration sample.
 - `requirements.txt`: Python dependencies (`httpx`, `pyyaml`).
 
+## Upstream & Acknowledgments
+- **Core Upstream Worker**: `gemini-web2api` (Handles Gemini Web session to OpenAI-compatible API mapping).
+- **Proxy Kernel**: `Mihomo` / MetaCubeX (Handles multi-port listeners and egress node routing).
+
 ## Port & Topology Conventions
 - **Gateway Entrypoint**: `8081`
 - **Workers Base Port**: `9000` (Worker 1 on `9001`, Worker N on `9000 + N`)

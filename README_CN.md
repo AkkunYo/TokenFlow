@@ -99,6 +99,17 @@ docker compose up -d
 
 ---
 
+## 🙏 致谢与参考项目 (Acknowledgments)
+
+`gemflow` 为自主设计研发的智能会话粘滞网关与多出口调度引擎，底层业务实例与分流网络深度集成并依赖以下优秀的开源项目：
+
+- 🔹 **[gemini-web2api](https://github.com/fatpandabb/gemini-web2api)**：提供 Gemini Web 端会话转标准 OpenAI API 格式的核心上游服务。
+- 🔹 **[Mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo)**：提供高性能代理内核、多监听端口分流以及自动延迟测速健康检查能力。
+
+感谢以上开源项目作者及社区贡献者的辛勤付出！
+
+---
+
 ## 🔍 DEBUG 日志示例
 
 开启 `DEBUG=true` 时可在终端查看实时的调度明细：

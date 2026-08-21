@@ -101,5 +101,14 @@ docker compose up -d
 
 ---
 
+## 🙏 Acknowledgments & References
+
+`gemflow` is a custom-engineered intelligent load balancing and routing gateway built on top of and integrating with the following outstanding open-source projects:
+
+- 🔹 **[gemini-web2api](https://github.com/fatpandabb/gemini-web2api)**: Upstream service provider converting Gemini Web sessions into standard OpenAI-compatible API endpoints.
+- 🔹 **[Mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo)**: High-performance rule-based proxy kernel powering multi-egress routing and latency testing.
+
+---
+
 ## 📄 License
 MIT License.
