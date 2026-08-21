@@ -183,8 +183,15 @@ def main():
             PROCESSES.append(p)
             print(f"[Worker-{wid}] Started PID {p.pid} on port {wport}")
 
-    # 4. 启动网关
-    print(f"\n[gemflow] Starting Gateway on port {args.port}...")
+    # 4. 启动网关并展示访问信息
+    print("\n" + "=" * 54)
+    print(f"  🌟 gemflow Gateway Started: http://127.0.0.1:{args.port}")
+    print("=" * 54)
+    print("  API Entrypoint : http://127.0.0.1:" + str(args.port) + "/v1/chat/completions")
+    print("  Models List    : http://127.0.0.1:" + str(args.port) + "/v1/models")
+    print(f"  Debug Mode     : {'ENABLED' if (args.debug or os.environ.get('DEBUG', '').lower() in ('true', '1', 'yes')) else 'DISABLED'}")
+    print("=" * 54 + "\n")
+
     gateway_script = os.path.join(BASE_DIR, "lb_gateway.py")
     cmd = [sys.executable, gateway_script, "--port", str(args.port), "--config", WORKERS_JSON]
     if args.debug or os.environ.get("DEBUG", "").lower() in ("true", "1", "yes"):

@@ -42,6 +42,10 @@ jobs:
           echo "$TAG" > VERSION
           echo "最终版本: $TAG"
 
+      - name: 运行单元测试
+        run: |
+          python3 -m unittest discover -s tests -p "test_*.py"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
