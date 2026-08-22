@@ -1,0 +1,40 @@
+name: Bug Report / 问题反馈
+description: 提交运行异常、代理路由失效或网关崩溃等 Bug 报告
+title: "[BUG] <简短描述问题>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你反馈 `gemflow` 的运行问题！请在提交前确保已拉取最新版本镜像/代码。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境 (Environment)
+      description: 请说明部署方式与操作系统版本
+      placeholder: |
+        - OS: macOS 14.5 / Ubuntu 22.04 / Debian 12
+        - 部署模式: Docker Compose / 本地 Python run_local.py
+        - gemflow 镜像版本: v1.0.7 / latest
+        - Worker 数量: 4
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤与异常行为 (Steps to Reproduce)
+      description: 描述触发 Bug 的完整调用步骤及预期行为
+      placeholder: |
+        1. 启动 gemflow ...
+        2. 发起 API 请求 ...
+        3. 出现异常 ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 运行日志 (Logs)
+      description: 开启 DEBUG=true 后终端输出的关键日志片段（请注意过滤并隐去私密 API Key / Token / 订阅域名）
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,32 @@
+name: Feature Request / 功能建议
+description: 为 gemflow 提出新特性、协议扩展或调度策略建议
+title: "[FEAT] <新功能简短说明>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎为 `gemflow` 提交功能建议与架构优化想法！
+  - type: textarea
+    id: problem
+    attributes:
+      label: 需求背景与解决的痛点 (Problem Description)
+      description: 当前遇到了什么限制或有何优化空间？
+      placeholder: 当处理大量长文本流式响应时...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的解决方案 (Proposed Solution)
+      description: 描述你希望如何实现或调度的方案
+      placeholder: 增加针对某种特定 Header 的粘滞规则或缓存...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案 (Alternatives Considered)
+      description: 是否有考虑过其他临时绕行或替代方案？
+    validations:
+      required: false
