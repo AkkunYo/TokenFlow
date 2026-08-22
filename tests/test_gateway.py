@@ -7,10 +7,12 @@ import sys
 # Ensure root directory is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from collections import OrderedDict
 from lb_gateway import (
     extract_request_meta,
     select_worker,
     cleanup_stale_sessions,
+    record_session,
     record_worker_failure,
     record_worker_success,
     LOCK,
@@ -28,7 +30,7 @@ class TestGatewayCore(unittest.TestCase):
                 {"id": 3, "port": 9003, "proxy": "http://127.0.0.1:19003"},
             ]
             lb_gateway.ACTIVE_CONNS = {1: 0, 2: 0, 3: 0}
-            lb_gateway.SESSION_MAP = {}
+            lb_gateway.SESSION_MAP = OrderedDict()
             lb_gateway.WORKER_STATUS = {
                 1: {"last_fail": 0, "fail_count": 0},
                 2: {"last_fail": 0, "fail_count": 0},
@@ -108,6 +110,29 @@ class TestGatewayCore(unittest.TestCase):
         with LOCK:
             self.assertNotIn("expired_session", lb_gateway.SESSION_MAP)
             self.assertIn("active_session", lb_gateway.SESSION_MAP)
+
+    def test_lru_session_cap_eviction(self):
+        orig_max = lb_gateway.MAX_SESSIONS
+        try:
+            lb_gateway.MAX_SESSIONS = 3
+            with LOCK:
+                record_session("s1", 1)
+                record_session("s2", 2)
+                record_session("s3", 3)
+                self.assertEqual(len(lb_gateway.SESSION_MAP), 3)
+
+                # 访问 s1，刷新 LRU 顺序
+                record_session("s1", 1)
+
+                # 插入 s4，此时应淘汰最久未访问的 s2
+                record_session("s4", 1)
+                self.assertEqual(len(lb_gateway.SESSION_MAP), 3)
+                self.assertIn("s1", lb_gateway.SESSION_MAP)
+                self.assertNotIn("s2", lb_gateway.SESSION_MAP)
+                self.assertIn("s3", lb_gateway.SESSION_MAP)
+                self.assertIn("s4", lb_gateway.SESSION_MAP)
+        finally:
+            lb_gateway.MAX_SESSIONS = orig_max
 
 
 if __name__ == "__main__":

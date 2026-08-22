@@ -16,6 +16,7 @@ import time
 import hashlib
 import threading
 import argparse
+from collections import OrderedDict
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
@@ -24,7 +25,7 @@ import http.client
 # 全局状态锁与路由表
 LOCK = threading.Lock()
 ACTIVE_CONNS = {}       # {worker_id: count}
-SESSION_MAP = {}        # {session_id: (worker_id, last_seen_time)}
+SESSION_MAP = OrderedDict()  # {session_id: (worker_id, last_seen_time)} - LRU 映射表
 WORKER_STATUS = {}      # {worker_id: {"last_fail": 0, "fail_count": 0}}
 WORKERS = []            # [{"id": 1, "port": 9001, "proxy": None}, ...]
 RR_INDEX = 0            # 轮询游标
@@ -32,6 +33,7 @@ REQ_COUNTER = 0
 DEBUG_ENABLED = False
 
 SESSION_TTL = 1800      # 会话粘滞有效期 (30分钟)
+MAX_SESSIONS = 50000    # 最大缓存会话数上限 (LRU 淘汰防止内存无限增长)
 FAIL_PENALTY_SEC = 20   # 故障节点冷却降权时间 (秒)
 
 
@@ -74,6 +76,22 @@ def cleanup_stale_sessions():
         stale_keys = [k for k, v in SESSION_MAP.items() if now - v[1] > SESSION_TTL]
         for k in stale_keys:
             del SESSION_MAP[k]
+
+
+def record_session(session_id, wid, seen_time=None):
+    """记录/更新 Session 映射 (带 LRU 容量上限保护)"""
+    if not session_id:
+        return
+    if seen_time is None:
+        seen_time = time.time()
+    # 移至最新位置
+    if session_id in SESSION_MAP:
+        SESSION_MAP.move_to_end(session_id)
+    SESSION_MAP[session_id] = (wid, seen_time)
+
+    # 达到上限时弹出最老未使用的会话 (FIFO / LRU 头部)
+    while len(SESSION_MAP) > MAX_SESSIONS:
+        SESSION_MAP.popitem(last=False)
 
 
 def extract_request_meta(headers, body_bytes):
@@ -142,7 +160,7 @@ def select_worker(session_id, exclude_wids=None):
             if bound_wid not in exclude_wids and not is_cooling_down:
                 target = next((w for w in available_workers if w["id"] == bound_wid), None)
                 if target:
-                    SESSION_MAP[session_id] = (bound_wid, now)
+                    record_session(session_id, bound_wid, now)
                     return target, "STICKY"
 
         # 最少连接 + 严格循环轮询（并发相等时严格依次推进轮换）
@@ -160,7 +178,7 @@ def select_worker(session_id, exclude_wids=None):
         RR_INDEX += 1
 
         if session_id:
-            SESSION_MAP[session_id] = (best_worker["id"], now)
+            record_session(session_id, best_worker["id"], now)
         return best_worker, "LEAST_CONN"
 
 
