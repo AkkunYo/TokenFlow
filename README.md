@@ -24,7 +24,7 @@
 | 🎯 **Sticky Session** | Extracts fingerprints from `user`, prompt MD5 (`ctx_<md5>`), or auth tokens | Pins session to same worker & egress IP, maximizing Google **Prompt KV Cache** (~72% TTFT cut) | In-memory session LRU map with request metadata extraction |
 | 🔄 **Intelligent Scheduling** | **Least-Connection + Round-Robin Tie-Breaking** | Prevents worker overload; distributes sequential requests evenly | Atomic active connection counters (`ACTIVE_CONNS`) + thread lock |
 | 🛡️ **High Availability** | **Automatic 429/5xx Retry & 20s Cooling Penalty** | Transparent node failover within sub-seconds, ensuring zero downtime | Instant retry across healthy workers; failed nodes penalized for 20s |
-| 🌐 **Multi-Egress Routing** | **Mihomo Kernel + Host IP Environment Awareness** | Eliminates single-IP rate limits and regional network blocking | Auto-routes Worker 1 via proxy (`:19001`) in CN hosts; Workers 2..N get dedicated proxy ports (`:19002..19000+N`) |
+| 🌐 **Multi-Egress Routing** | **Mihomo Kernel + Per-Worker Policy Group Bound to a Distinct Node** | Every worker gets its own egress IP, eliminating single-IP rate limits and regional blocking | Each worker owns policy group `🎯 Worker-N` and listener port (`19001..19000+N`); distinct nodes bound via REST API after startup |
 | 🌊 **Zero-Buffer Streaming** | **Raw HTTP Chunked & SSE Passthrough** | Real-time typewriter effect with ultra-low constant memory footprint | Direct byte stream forwarding without buffering layers |
 | 🔍 **End-to-End Visibility** | **Real-Time Fingerprint & Route Decision Tracing** | Full clarity on routing path (`STICKY` vs `LEAST_CONN`) and worker egress nodes | Enabled via `DEBUG=true` or `--debug` CLI argument |
 
@@ -66,13 +66,29 @@ Google Gemini models implement **Prompt KV Prefix Caching**. Random or naive rou
                │                          │                     │                     │
                ▼ (Mihomo :19001 / Direct) ▼ (Mihomo :19002)     ▼ (Mihomo :19003)     ▼ (Mihomo :19000+N)
         ┌──────────────┐           ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-        │ Proxy/Direct │           │ Proxy Node A │      │ Proxy Node B │      │ Proxy Node N │
+        │ 🎯 Worker-1  │           │ 🎯 Worker-2  │      │ 🎯 Worker-3  │      │ 🎯 Worker-N  │  ← dedicated group
+        └──────┬───────┘           └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
+               │                          │                     │                     │
+        ┌──────────────┐           ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+        │Direct/Node A │           │    Node B    │      │    Node C    │      │    Node N    │  ← all distinct
         └──────┬───────┘           └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
                │                          │                     │                     │
                └──────────────────────────┴──────────┬──────────┴─────────────────────┘
                                                      ▼
                                           [Google Gemini Upstream]
 ```
+
+### Egress Node Assignment
+
+Each worker owns a dedicated Mihomo policy group `🎯 Worker-N`, and its listener port `19000+N` binds one-to-one to that group. After Mihomo starts, `assign_worker_nodes.py` performs the assignment through the external-controller REST API (`127.0.0.1:9090`):
+
+1. Poll until provider subscriptions load and health-checks complete (up to 45s)
+2. Collect real egress nodes from the subscription (excluding policy groups themselves, direct-type nodes, and nodes with no latency history)
+3. Bind a **distinct** node to each worker group, ordered by ascending latency
+
+Graceful degradation: when healthy nodes are fewer than proxied workers, nodes are reused in rotation with a notice logged; when no healthy node is found at all, every group keeps its default `♻️ 自动选择` (url-test auto-select), prioritizing connectivity over egress diversity.
+
+> Config rendering is centralized in `mihomo_config.py`, so the container path (`start.sh`) and the local path (`run_local.py`) produce identical configuration.
 
 ---
 
@@ -180,22 +196,45 @@ print()
 
 ## 📋 Runtime Logs & Visibility
 
-### 1. Worker Egress IP Status Inspection
+### 1. Egress Node Assignment Logs
 
-On startup or status check, the gateway reports port, network mode, and geo-IP information for all workers:
+After Mihomo starts, each worker group is bound to a distinct node, logged line by line:
 
 ```text
-========== [Worker Egress IP Status @ 2026-08-21 23:15:25] ==========
-[Worker-1 : Port 9001 : DIRECT (Native)] -> United States (Ashburn) - IP: 3.216.155.203 [Amazon Technologies Inc.]
-[Worker-2 : Port 9002 : Proxy (http://127.0.0.1:19002)] -> United States (Reston) - IP: 104.28.153.225 [Cloudflare, Inc.]
-[Worker-3 : Port 9003 : Proxy (http://127.0.0.1:19003)] -> United States (Reston) - IP: 104.28.153.194 [Cloudflare, Inc.]
-[Worker-4 : Port 9004 : Proxy (http://127.0.0.1:19004)] -> United States (Reston) - IP: 104.28.167.43 [Cloudflare, Inc.]
-[Worker-5 : Port 9005 : Proxy (http://127.0.0.1:19005)] -> United States (Reston) - IP: 104.28.157.167 [Cloudflare, Inc.]
-[Worker-6 : Port 9006 : Proxy (http://127.0.0.1:19006)] -> United States (Reston) - IP: 104.28.157.167 [Cloudflare, Inc.]
+[NodeAssign] Worker-2 -> 🇯🇵 Japan IEPL 01
+[NodeAssign] Worker-3 -> 🇸🇬 Singapore IEPL 02
+[NodeAssign] Worker-4 -> 🇭🇰 Hong Kong IEPL 03
+[NodeAssign] Worker-5 -> 🇺🇸 United States IEPL 01
+[NodeAssign] Completed: 4/4 worker(s) bound, 4 distinct egress node(s).
+```
+
+When healthy nodes are insufficient, they are reused in rotation with a notice:
+
+```text
+[NodeAssign] Notice: only 2 healthy node(s) for 4 proxied worker(s). Nodes will be reused in rotation.
+```
+
+### 2. Worker Egress IP Status Inspection
+
+Port, network mode, and geo-IP information per worker. The first panel prints once the proxy path is confirmed effective, then every 5 minutes with the current live state:
+
+```text
+========== [Worker Egress IP Status @ 2026-08-22 10:05:26] ==========
+[Worker-1 : Port 9001 : DIRECT (Native)] -> United States (Ashburn) - IP: 44.196.116.2 [AWS EC2 (us-east-1)]
+[Worker-2 : Port 9002 : Proxy (:19002) ] -> Japan (Tokyo) - IP: 203.0.113.45 [NTT Communications]
+[Worker-3 : Port 9003 : Proxy (:19003) ] -> Singapore (Singapore) - IP: 198.51.100.72 [DigitalOcean]
+[Worker-4 : Port 9004 : Proxy (:19004) ] -> Hong Kong (Central) - IP: 192.0.2.181 [HKT Limited]
+[Worker-5 : Port 9005 : Proxy (:19005) ] -> United States (Los Angeles) - IP: 203.0.113.209 [Cloudflare, Inc.]
 ======================================================================
 ```
 
-### 2. Real-Time Routing Logs (`DEBUG=true`)
+If the proxy path is not confirmed within 180s, the panel prints the current state as-is with a warning, so a misconfigured setup never stays silent:
+
+```text
+[LB] Warning: proxy egress not confirmed within 180s. Printing current state as-is.
+```
+
+### 3. Real-Time Routing Logs (`DEBUG=true`)
 
 Enable `DEBUG=true` to monitor real-time session fingerprints, routing decisions (`STICKY` vs `LEAST_CONN`), and response times:
 
@@ -207,6 +246,23 @@ Enable `DEBUG=true` to monitor real-time session fingerprints, routing decisions
 # 2. Subsequent turn -> STICKY match on Worker-2 (Prompt KV cache hit, accelerated TTFT)
 [DEBUG @ 21:05:25] [Req #2] [POST] /v1/chat/completions | Model: 'gemini-2.5-flash' | Session: ctx_8a3f912b41de | Prompt: "Explain quantum computing..." -> Selected: Worker-2 (Port 9002, Egress: http://127.0.0.1:19002, Route: STICKY, Active: 1)
 [DEBUG @ 21:05:26] [Req #2] Completed in 1.15s | HTTP 200 via Worker-2 (http://127.0.0.1:19002)
+```
+
+### 4. Diagnostic & Troubleshooting Commands
+
+When diagnosing proxy node connectivity or checking internal worker logs:
+
+```bash
+# 1. View Mihomo kernel & subscription logs
+docker exec -it gemflow cat /tmp/mihomo.log
+# Or tail real-time proxy traffic
+docker exec -it gemflow tail -f /tmp/mihomo.log
+
+# 2. Test specific worker proxy port egress connectivity (e.g., Worker-2 on port 19002)
+docker exec -it gemflow curl -x http://127.0.0.1:19002 -s https://ipinfo.io/json
+
+# 3. Inspect individual upstream worker service logs (e.g., Worker-2)
+docker exec -it gemflow cat /app/worker_2.log
 ```
 
 ---

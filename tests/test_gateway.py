@@ -1,6 +1,7 @@
 import json
 import time
 import unittest
+import threading
 import os
 import sys
 
@@ -82,32 +83,32 @@ class TestGatewayCore(unittest.TestCase):
 
     def test_sticky_session_pinning(self):
         # 第一次请求分配 Worker
-        worker1, route1 = select_worker("ctx_test_session_1")
+        worker1, route1, _ = select_worker("ctx_test_session_1")
         self.assertEqual(route1, "LEAST_CONN")
 
         # 第二次相同 session 请求必须命中相同的 Worker (STICKY)
-        worker2, route2 = select_worker("ctx_test_session_1")
+        worker2, route2, _ = select_worker("ctx_test_session_1")
         self.assertEqual(route2, "STICKY")
         self.assertEqual(worker1["id"], worker2["id"])
 
     def test_least_conn_and_round_robin(self):
         # 当所有 worker 活跃连接为 0 时，应轮询分配
-        w1, _ = select_worker(None)
-        w2, _ = select_worker(None)
-        w3, _ = select_worker(None)
+        w1, _, _ = select_worker(None)
+        w2, _, _ = select_worker(None)
+        w3, _, _ = select_worker(None)
 
         self.assertEqual([w1["id"], w2["id"], w3["id"]], [1, 2, 3])
 
     def test_failover_cooling_penalty(self):
         # 绑定 session 到 Worker 1
-        w1, _ = select_worker("ctx_session_fail")
+        w1, _, _ = select_worker("ctx_session_fail")
         self.assertEqual(w1["id"], 1)
 
         # 标记 Worker 1 故障
         record_worker_failure(1)
 
         # 再次路由该 session，由于 Worker 1 在冷却池中，应自动调度到其他健康节点
-        w_next, route = select_worker("ctx_session_fail")
+        w_next, route, _ = select_worker("ctx_session_fail")
         self.assertNotEqual(w_next["id"], 1)
         self.assertEqual(route, "LEAST_CONN")
 
@@ -147,5 +148,230 @@ class TestGatewayCore(unittest.TestCase):
             lb_gateway.MAX_SESSIONS = orig_max
 
 
+    def test_probe_single_worker_egress(self):
+        worker = {"id": 1, "port": 9001, "proxy": None}
+        res = lb_gateway.probe_single_worker_egress(worker, timeout=1)
+        self.assertTrue("Worker-1" in res)
+        self.assertTrue("Port 9001" in res)
+
+
+def _line(wid, ip):
+    return (wid, f"[Worker-{wid} : Port 900{wid} : x] -> United States (Ashburn) - IP: {ip} [ISP]")
+
+
+class TestEgressReadiness(unittest.TestCase):
+    """首次打印门控：确认代理链路真正生效后才输出状态面板"""
+
+    DIRECT_W = {"id": 1, "port": 9001, "proxy": None}
+
+    @staticmethod
+    def _proxy_w(wid):
+        return {"id": wid, "port": 9000 + wid, "proxy": f"http://127.0.0.1:1900{wid}"}
+
+    def test_not_ready_when_proxy_falls_back_to_direct_ip(self):
+        """代理端口出口与原生直连完全相同 => mihomo 未生效，不该打印"""
+        workers = [self.DIRECT_W, self._proxy_w(2), self._proxy_w(3)]
+        results = [_line(1, "44.196.116.2"), _line(2, "44.196.116.2"), _line(3, "44.196.116.2")]
+        self.assertFalse(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_ready_when_proxy_ip_differs_from_direct(self):
+        workers = [self.DIRECT_W, self._proxy_w(2), self._proxy_w(3)]
+        results = [_line(1, "44.196.116.2"), _line(2, "137.131.35.71"), _line(3, "5.6.7.8")]
+        self.assertTrue(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_ready_when_proxies_share_node_but_differ_from_direct(self):
+        """健康节点少于 Worker 数时轮转复用是合法结果，不应卡住首次打印"""
+        workers = [self.DIRECT_W, self._proxy_w(2), self._proxy_w(3)]
+        results = [_line(1, "44.196.116.2"), _line(2, "137.131.35.71"), _line(3, "137.131.35.71")]
+        self.assertTrue(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_ready_with_single_proxy_worker_and_no_direct(self):
+        """全代理且仅 1 个 Worker：无从比较，探测成功即视为就绪"""
+        workers = [self._proxy_w(1)]
+        results = [_line(1, "137.131.35.71")]
+        self.assertTrue(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_ready_in_direct_only_mode(self):
+        workers = [self.DIRECT_W]
+        results = [_line(1, "44.196.116.2")]
+        self.assertTrue(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_not_ready_when_any_probe_failed(self):
+        workers = [self.DIRECT_W, self._proxy_w(2)]
+        results = [_line(1, "44.196.116.2"),
+                   (2, "[Worker-2 : Port 9002 : x] -> Connection Failed (URLError)")]
+        self.assertFalse(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_not_ready_on_empty_results(self):
+        self.assertFalse(lb_gateway.evaluate_egress_readiness([self.DIRECT_W], []))
+
+
+class TestSanitizeWorkers(unittest.TestCase):
+    """workers.json 属系统边界输入，畸形条目必须被丢弃而非在远处崩溃"""
+
+    def test_valid_config_passes_through(self):
+        raw = [{"id": 1, "port": 9001, "proxy": None},
+               {"id": 2, "port": 9002, "proxy": "http://127.0.0.1:19002"}]
+        cleaned, dropped = lb_gateway.sanitize_workers(raw)
+        self.assertEqual(len(cleaned), 2)
+        self.assertEqual(dropped, [])
+        self.assertEqual(cleaned[1]["proxy"], "http://127.0.0.1:19002")
+
+    def test_drops_entry_missing_id_or_port(self):
+        raw = [{"port": 9001}, {"id": 2}, {"id": 3, "port": 9003}]
+        cleaned, dropped = lb_gateway.sanitize_workers(raw)
+        self.assertEqual([w["id"] for w in cleaned], [3])
+        self.assertEqual(len(dropped), 2)
+
+    def test_drops_non_dict_and_out_of_range_port(self):
+        raw = ["not-a-dict", {"id": 1, "port": 0}, {"id": 2, "port": 70000},
+               {"id": 3, "port": 9003}]
+        cleaned, _ = lb_gateway.sanitize_workers(raw)
+        self.assertEqual([w["id"] for w in cleaned], [3])
+
+    def test_rejects_bool_id_since_bool_is_int_subclass(self):
+        cleaned, dropped = lb_gateway.sanitize_workers([{"id": True, "port": 9001}])
+        self.assertEqual(cleaned, [])
+        self.assertEqual(len(dropped), 1)
+
+    def test_drops_gateway_port_collision(self):
+        raw = [{"id": 1, "port": 8081}, {"id": 2, "port": 9002}]
+        cleaned, dropped = lb_gateway.sanitize_workers(raw, gateway_port=8081)
+        self.assertEqual([w["id"] for w in cleaned], [2])
+        self.assertIn("collides", dropped[0])
+
+    def test_gateway_port_honours_custom_value(self):
+        raw = [{"id": 1, "port": 9001}, {"id": 2, "port": 9002}]
+        cleaned, _ = lb_gateway.sanitize_workers(raw, gateway_port=9001)
+        self.assertEqual([w["id"] for w in cleaned], [2])
+
+    def test_drops_duplicate_ids_keeping_first(self):
+        raw = [{"id": 1, "port": 9001}, {"id": 1, "port": 9099}]
+        cleaned, dropped = lb_gateway.sanitize_workers(raw)
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(cleaned[0]["port"], 9001)
+        self.assertIn("duplicate", dropped[0])
+
+    def test_blank_or_non_string_proxy_degrades_to_direct(self):
+        raw = [{"id": 1, "port": 9001, "proxy": "   "},
+               {"id": 2, "port": 9002, "proxy": 12345}]
+        cleaned, dropped = lb_gateway.sanitize_workers(raw)
+        self.assertEqual(len(cleaned), 2)
+        self.assertIsNone(cleaned[0]["proxy"])
+        self.assertIsNone(cleaned[1]["proxy"])
+        self.assertEqual(len(dropped), 2)
+
+    def test_proxy_whitespace_is_trimmed(self):
+        cleaned, _ = lb_gateway.sanitize_workers(
+            [{"id": 1, "port": 9001, "proxy": " http://127.0.0.1:19001 "}])
+        self.assertEqual(cleaned[0]["proxy"], "http://127.0.0.1:19001")
+
+    def test_non_list_input_rejected(self):
+        cleaned, dropped = lb_gateway.sanitize_workers({"id": 1, "port": 9001})
+        self.assertEqual(cleaned, [])
+        self.assertEqual(len(dropped), 1)
+
+    def test_sanitize_does_not_mutate_input(self):
+        raw = [{"id": 1, "port": 9001, "proxy": " http://x "}]
+        snapshot = json.loads(json.dumps(raw))
+        lb_gateway.sanitize_workers(raw)
+        self.assertEqual(raw, snapshot)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConnSlotAccounting(unittest.TestCase):
+    """ACTIVE_CONNS 占用/释放必须成对，且选中与计数在同一临界区完成"""
+
+    def setUp(self):
+        with LOCK:
+            lb_gateway.WORKERS = [
+                {"id": 1, "port": 9001, "proxy": None},
+                {"id": 2, "port": 9002, "proxy": "http://127.0.0.1:19002"},
+            ]
+            lb_gateway.ACTIVE_CONNS = {1: 0, 2: 0}
+            lb_gateway.SESSION_MAP = OrderedDict()
+            lb_gateway.WORKER_STATUS = {
+                1: {"last_fail": 0, "fail_count": 0},
+                2: {"last_fail": 0, "fail_count": 0},
+            }
+            lb_gateway.RR_INDEX = 0
+
+    def test_acquire_slot_increments_atomically(self):
+        w, _, active = select_worker(None, acquire_slot=True)
+        self.assertEqual(active, 1)
+        self.assertEqual(lb_gateway.ACTIVE_CONNS[w["id"]], 1)
+
+    def test_no_acquire_leaves_counter_untouched(self):
+        w, _, _ = select_worker(None)
+        self.assertEqual(lb_gateway.ACTIVE_CONNS[w["id"]], 0)
+
+    def test_release_returns_counter_to_zero(self):
+        w, _, _ = select_worker(None, acquire_slot=True)
+        lb_gateway.release_worker_slot(w["id"])
+        self.assertEqual(lb_gateway.ACTIVE_CONNS[w["id"]], 0)
+
+    def test_release_never_goes_negative(self):
+        lb_gateway.release_worker_slot(1)
+        lb_gateway.release_worker_slot(1)
+        self.assertEqual(lb_gateway.ACTIVE_CONNS[1], 0)
+
+    def test_concurrent_acquire_release_balances_out(self):
+        """并发占用/释放后计数必须归零，验证无泄漏与无竞态"""
+        def _cycle():
+            for _ in range(50):
+                w, _, _ = select_worker(None, acquire_slot=True)
+                lb_gateway.release_worker_slot(w["id"])
+
+        threads = [threading.Thread(target=_cycle) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(lb_gateway.ACTIVE_CONNS[1], 0)
+        self.assertEqual(lb_gateway.ACTIVE_CONNS[2], 0)
+
+
+class TestProbeTimeoutPlaceholder(unittest.TestCase):
+    """探测线程超时未返回时必须补占位行，且不得被误判为就绪"""
+
+    def test_timeout_worker_gets_placeholder_line(self):
+        workers = [{"id": 1, "port": 9001, "proxy": None},
+                   {"id": 2, "port": 9002, "proxy": "http://127.0.0.1:19002"}]
+
+        orig = lb_gateway.probe_single_worker_egress
+        orig_timeout = lb_gateway.PROBE_TIMEOUT
+        try:
+            lb_gateway.PROBE_TIMEOUT = 0.1
+
+            def _slow(w, timeout=5):
+                if w["id"] == 2:
+                    time.sleep(30)  # 永不按时返回
+                return f"[Worker-1 : Port 9001 : DIRECT] -> US - IP: 1.2.3.4 [ISP]"
+
+            lb_gateway.probe_single_worker_egress = _slow
+            results = lb_gateway._probe_all_workers(workers)
+        finally:
+            lb_gateway.probe_single_worker_egress = orig
+            lb_gateway.PROBE_TIMEOUT = orig_timeout
+
+        self.assertEqual([wid for wid, _ in results], [1, 2])
+        self.assertIn("Probe Failed (Timeout)", dict(results)[2])
+        # 有失败项 => 不该判定为就绪
+        self.assertFalse(lb_gateway.evaluate_egress_readiness(workers, results))
+
+
+class TestResponseHeaderPolicy(unittest.TestCase):
+    """响应头下发策略：流式响应必须可界定结束，且不重复逐跳头"""
+
+    def test_hop_by_hop_headers_are_filtered(self):
+        """send_response 自动补 Server/Date，透传上游同名头会导致重复"""
+        for h in ("transfer-encoding", "connection", "server", "date"):
+            self.assertIn(h, lb_gateway.SKIPPED_RESPONSE_HEADERS)
+
+    def test_content_length_not_filtered(self):
+        """Content-Length 必须透传，否则非流式响应也失去边界"""
+        self.assertNotIn("content-length", lb_gateway.SKIPPED_RESPONSE_HEADERS)

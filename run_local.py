@@ -14,9 +14,13 @@ import time
 import json
 import signal
 import shutil
+import glob
 import argparse
 import subprocess
 import urllib.request
+
+import mihomo_config
+import assign_worker_nodes
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKERS_JSON = os.path.join(BASE_DIR, "workers.json")
@@ -64,6 +68,23 @@ def fetch_latest_upstream(target_path, force=False):
         return True
 
     return False
+
+
+def spawn_tracked(*popen_args, **popen_kwargs):
+    """
+    启动子进程并登记到 PROCESSES。
+
+    信号处理器在主线程字节码间隙执行，若 SIGINT/SIGTERM 恰好落在 Popen 返回后、
+    登记前，terminate_all 就看不到该进程从而将其孤儿化。故用 try/finally 保证
+    只要进程已创建就必定入列。
+    """
+    p = None
+    try:
+        p = subprocess.Popen(*popen_args, **popen_kwargs)
+        return p
+    finally:
+        if p is not None:
+            PROCESSES.append(p)
 
 
 def terminate_all(signum=None, frame=None):
@@ -124,41 +145,20 @@ def detect_is_cn_host():
 
 
 def generate_mihomo_config(worker_count, sub_urls):
-    if not os.path.exists(TEMPLATE_YAML):
-        print(f"[Warning] Template {TEMPLATE_YAML} not found. Skipping proxy setup.")
+    """渲染 Mihomo 运行配置 (与容器启动路径共用 mihomo_config 渲染器)"""
+    # 清除旧 provider 缓存，确保每次启动都从订阅 URL 拉取最新节点
+    for stale in glob.glob(os.path.join(BASE_DIR, "sub-*.yaml")):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+
+    try:
+        mihomo_config.write_config(TEMPLATE_YAML, MIHOMO_CONFIG, worker_count,
+                                   sub_urls, BASE_PROXY_PORT)
+    except Exception as e:
+        print(f"[Warning] Failed to render Mihomo config: {e}. Skipping proxy setup.")
         return False
-
-    with open(TEMPLATE_YAML, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    providers_block = "\nproxy-providers:\n"
-    for idx, url in enumerate(sub_urls, start=1):
-        url = url.strip()
-        if not url:
-            continue
-        providers_block += f"""  sub-{idx}:
-    type: http
-    url: "{url}"
-    interval: 3600
-    path: ./sub-{idx}.yaml
-    health-check:
-      enable: true
-      interval: 180
-      url: https://www.gstatic.com/generate_204
-"""
-
-    listeners_block = "\nlisteners:\n"
-    for i in range(worker_count):
-        proxy_port = BASE_PROXY_PORT + i + 1
-        listeners_block += f"""  - name: mixed-{proxy_port}
-    type: mixed
-    port: {proxy_port}
-    proxy: 🚀 节点选择
-"""
-
-    full_yaml = content + providers_block + listeners_block
-    with open(MIHOMO_CONFIG, "w", encoding="utf-8") as f:
-        f.write(full_yaml)
 
     return True
 
@@ -200,9 +200,8 @@ def main():
             mihomo_bin = shutil.which("mihomo") or shutil.which("clash-meta")
             if mihomo_bin:
                 try:
-                    p = subprocess.Popen([mihomo_bin, "-d", BASE_DIR, "-f", MIHOMO_CONFIG],
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    PROCESSES.append(p)
+                    p = spawn_tracked([mihomo_bin, "-d", BASE_DIR, "-f", MIHOMO_CONFIG],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     time.sleep(2)
                     if p.poll() is None:
                         use_proxies = True
@@ -239,6 +238,16 @@ def main():
     for w in workers:
         print(f"  -> Worker-{w['id']}: Port {w['port']} [Egress: {w['proxy'] or 'DIRECT'}]")
 
+    # 2.1 为各 Worker 策略组绑定互不相同的出口节点
+    if use_proxies:
+        direct_ids = [w["id"] for w in workers if not w.get("proxy")]
+        try:
+            assign_worker_nodes.assign(worker_count=args.workers,
+                                       skip_worker_ids=direct_ids,
+                                       max_wait=45.0)
+        except Exception as e:
+            print(f"[NodeAssign] Skipped due to error: {e}")
+
     # 3. 检查/拉取并启动 gemini_web2api 实例
     web2api_script = os.path.join(BASE_DIR, "gemini_web2api.py")
     fetch_latest_upstream(web2api_script, force=args.update)
@@ -265,9 +274,8 @@ def main():
                 json.dump(w_cfg, f, indent=2)
 
             log_file = open(os.path.join(BASE_DIR, f"worker_{wid}.log"), "w")
-            p = subprocess.Popen([sys.executable, web2api_script, "--port", str(wport), "--config", os.path.join(wdir, "config.json")],
-                                 cwd=wdir, stdout=log_file, stderr=log_file)
-            PROCESSES.append(p)
+            p = spawn_tracked([sys.executable, web2api_script, "--port", str(wport), "--config", os.path.join(wdir, "config.json")],
+                              cwd=wdir, stdout=log_file, stderr=log_file)
             print(f"[Worker-{wid}] Started PID {p.pid} on port {wport}")
 
     # 4. 启动网关并展示访问信息
@@ -284,8 +292,7 @@ def main():
     if args.debug or os.environ.get("DEBUG", "").lower() in ("true", "1", "yes"):
         cmd.append("--debug")
 
-    p_gw = subprocess.Popen(cmd)
-    PROCESSES.append(p_gw)
+    p_gw = spawn_tracked(cmd)
     p_gw.wait()
 
 

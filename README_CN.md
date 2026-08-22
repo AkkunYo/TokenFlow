@@ -22,7 +22,7 @@
 | 🎯 **会话粘滞 (Sticky Session)** | 提取 `user`、Prompt 首句 MD5（`ctx_<md5>`）或 Token 特征作为指纹 | 锁定同一 Worker 与出口 IP，命中 Google **Prompt KV 缓存**，降低 70%+ TTFT 首字延迟 | 自动提取 Request Meta，维护内存级 Session LRU 映射表 |
 | 🔄 **智能调度均衡** | **最少活跃连接 (Least-Connection) + 循环轮询 (Round-Robin)** | 避免单 Worker 负载过高，并发相同时严格均分流量 | 原子连接计数器 `ACTIVE_CONNS` + 线程安全锁调度 |
 | 🛡️ **高可用容灾** | **429 / 5xx / 网络断开秒级自动重试 + 冷却降权** | 单个节点限流或异常时秒级透明漂移，客户端业务零中断 | 自动加入 20 秒冷却池（`FAIL_PENALTY_SEC=20`）并调度健康节点 |
-| 🌐 **多出口网络分流** | **集成 Mihomo 内核 + 智能感知宿主机网络归属** | 多路独立出口 IP 并行请求，彻底规避单 IP 风控限流与地域屏蔽 | 自动感知 CN IP 开启 `19001` 代理；Worker 2..N 独享独立监听隧道（`19002..19000+N`） |
+| 🌐 **多出口网络分流** | **集成 Mihomo 内核 + 每 Worker 独立策略组绑定不同节点** | 各 Worker 拥有互不相同的出口 IP，彻底规避单 IP 风控限流与地域屏蔽 | 每个 Worker 独享策略组 `🎯 Worker-N` 与监听端口（`19001..19000+N`）；启动后经 REST API 绑定不同节点 |
 | 🌊 **极速流式透传** | **零缓冲 HTTP Chunked / SSE 流式传输** | 打字机效果实时呈现，首字极速下发，内存占用恒定极低 | `urllib` / 原始字节流无缓冲管道直通 |
 | 🔍 **全链路透明观测** | **Session 指纹、路由决策与耗时实时追踪** | 清晰掌握每笔请求命中路径（`STICKY` vs `LEAST_CONN`）与出口节点 | 环境变量 `DEBUG=true` / 启动参数 `--debug` 实时输出全彩日志 |
 
@@ -64,13 +64,29 @@ Google Gemini 模型具备服务端 **Prompt KV 前缀缓存加速机制**。传
                 │                          │                     │                     │
                 ▼ (Mihomo :19001 / 直连)    ▼ (Mihomo :19002)     ▼ (Mihomo :19003)     ▼ (Mihomo :19000+N)
          ┌──────────────┐           ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-         │ 优选代理/DIRECT│          │ 优选代理节点 A │     │ 优选代理节点 B │     │ 优选代理节点 N │
+         │ 🎯 Worker-1  │           │ 🎯 Worker-2  │      │ 🎯 Worker-3  │      │ 🎯 Worker-N  │  ← 专属策略组
+         └──────┬───────┘           └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
+                │                          │                     │                     │
+         ┌──────────────┐           ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+         │ 直连 / 节点 A │           │    节点 B    │      │    节点 C    │      │    节点 N    │  ← 互不相同
          └──────┬───────┘           └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
                 │                          │                     │                     │
                 └──────────────────────────┴──────────┬──────────┴─────────────────────┘
                                                       ▼
                                            [Google Gemini 服务端]
 ```
+
+### 出口节点分配机制
+
+每个 Worker 在 Mihomo 配置中拥有专属策略组 `🎯 Worker-N`，其监听端口 `19000+N` 一对一绑定到该组。Mihomo 启动后，`assign_worker_nodes.py` 通过 external-controller REST API（`127.0.0.1:9090`）执行分配：
+
+1. 轮询等待订阅加载与 health-check 完成，最长 45 秒
+2. 收集订阅中的真实出口节点（排除策略组自身、直连类节点、无测速历史的节点）
+3. 按延迟升序，为各 Worker 策略组绑定**互不相同**的节点
+
+降级策略：健康节点数少于 Worker 数时，节点按顺序轮转复用并打印提示；一个健康节点都探测不到时，各组保留默认的 `♻️ 自动选择`（url-test 自动择优），保证链路可用性优先于出口分散性。
+
+> 配置渲染由 `mihomo_config.py` 统一负责，容器（`start.sh`）与本地（`run_local.py`）两条启动路径产出完全一致的配置。
 
 ---
 
@@ -186,22 +202,45 @@ print()
 
 ## 📋 运行日志与调试示例 (Logs & Visibility)
 
-### 1. 各 Worker 出口 IP 状态自检日志
+### 1. 出口节点分配日志
 
-系统启动与自检时输出各 Worker 的端口、出口网络类型及归属地信息：
+Mihomo 启动后为各 Worker 策略组绑定互不相同的节点，逐条输出分配结果：
 
 ```text
-========== [Worker Egress IP Status @ 2026-08-21 23:15:25] ==========
-[Worker-1 : Port 9001 : DIRECT (Native)] -> United States (Ashburn) - IP: 3.216.155.203 [Amazon Technologies Inc.]
-[Worker-2 : Port 9002 : Proxy (http://127.0.0.1:19002)] -> United States (Reston) - IP: 104.28.153.225 [Cloudflare, Inc.]
-[Worker-3 : Port 9003 : Proxy (http://127.0.0.1:19003)] -> United States (Reston) - IP: 104.28.153.194 [Cloudflare, Inc.]
-[Worker-4 : Port 9004 : Proxy (http://127.0.0.1:19004)] -> United States (Reston) - IP: 104.28.167.43 [Cloudflare, Inc.]
-[Worker-5 : Port 9005 : Proxy (http://127.0.0.1:19005)] -> United States (Reston) - IP: 104.28.157.167 [Cloudflare, Inc.]
-[Worker-6 : Port 9006 : Proxy (http://127.0.0.1:19006)] -> United States (Reston) - IP: 104.28.157.167 [Cloudflare, Inc.]
+[NodeAssign] Worker-2 -> 🇯🇵 日本 IEPL 01
+[NodeAssign] Worker-3 -> 🇸🇬 新加坡 IEPL 02
+[NodeAssign] Worker-4 -> 🇭🇰 香港 IEPL 03
+[NodeAssign] Worker-5 -> 🇺🇸 美国 IEPL 01
+[NodeAssign] Completed: 4/4 worker(s) bound, 4 distinct egress node(s).
+```
+
+健康节点不足时轮转复用并给出提示：
+
+```text
+[NodeAssign] Notice: only 2 healthy node(s) for 4 proxied worker(s). Nodes will be reused in rotation.
+```
+
+### 2. 各 Worker 出口 IP 状态自检日志
+
+各 Worker 的端口、出口网络类型及归属地信息，代理链路确认生效后打印首轮，随后每 5 分钟输出一次当前实况：
+
+```text
+========== [Worker Egress IP Status @ 2026-08-22 10:05:26] ==========
+[Worker-1 : Port 9001 : DIRECT (Native)] -> United States (Ashburn) - IP: 44.196.116.2 [AWS EC2 (us-east-1)]
+[Worker-2 : Port 9002 : Proxy (:19002) ] -> Japan (Tokyo) - IP: 203.0.113.45 [NTT Communications]
+[Worker-3 : Port 9003 : Proxy (:19003) ] -> Singapore (Singapore) - IP: 198.51.100.72 [DigitalOcean]
+[Worker-4 : Port 9004 : Proxy (:19004) ] -> Hong Kong (Central) - IP: 192.0.2.181 [HKT Limited]
+[Worker-5 : Port 9005 : Proxy (:19005) ] -> United States (Los Angeles) - IP: 203.0.113.209 [Cloudflare, Inc.]
 ======================================================================
 ```
 
-### 2. 详细路由调试日志 (`DEBUG=true`)
+**首轮打印时机**：仅在探测确认代理出口与原生直连 IP 存在差异后才打印，避免 Mihomo 未就绪时输出一堆无意义的重复直连 IP。若 180 秒内仍未确认生效，则无条件打印当前实况并附带一行 warning 便于排查：
+
+```text
+[LB] Warning: proxy egress not confirmed within 180s. Printing current state as-is.
+```
+
+### 3. 详细路由调试日志 (`DEBUG=true`)
 
 开启 `DEBUG=true` 时可在终端实时追踪请求的 Session 指纹、决策路径（`STICKY` vs `LEAST_CONN`）与响应耗时：
 
@@ -213,6 +252,32 @@ print()
 # 2. 会话后续追问 -> 精准触发 STICKY 命中 Worker-2 (命中 KV 缓存，响应加速)
 [DEBUG @ 21:05:25] [Req #2] [POST] /v1/chat/completions | Model: 'gemini-2.5-flash' | Session: ctx_8a3f912b41de | Prompt: "Explain quantum computing..." -> Selected: Worker-2 (Port 9002, Egress: http://127.0.0.1:19002, Route: STICKY, Active: 1)
 [DEBUG @ 21:05:26] [Req #2] Completed in 1.15s | HTTP 200 via Worker-2 (http://127.0.0.1:19002)
+```
+
+### 4. 故障排查与连通性自检命令
+
+当遇到代理出口未生效、节点测速异常或需要查看实例内部状态时：
+
+```bash
+# 1. 查看 Mihomo 代理内核与订阅拉取日志
+docker exec -it gemflow cat /tmp/mihomo.log
+# 或实时滚动追踪代理日志
+docker exec -it gemflow tail -f /tmp/mihomo.log
+
+# 2. 手动测试指定 Worker 代理端口的出口连通性 (以 Worker-2 对应的 19002 为例)
+docker exec -it gemflow curl -x http://127.0.0.1:19002 -s https://ipinfo.io/json
+
+# 3. 查看特定 Worker 实例的上游运行日志 (以 Worker-2 为例)
+docker exec -it gemflow cat /app/worker_2.log
+
+# 4. 查看各 Worker 策略组当前绑定的节点 (确认出口是否已分散)
+docker exec -it gemflow sh -c 'for i in $(seq 2 5); do
+  curl -s "http://127.0.0.1:9090/proxies/%F0%9F%8E%AF%20Worker-$i" \
+    | grep -o "\"now\":\"[^\"]*\"" | sed "s/^/Worker-$i /"
+done'
+
+# 5. 手动重新分配出口节点 (节点大面积掉线恢复后可重新分散)
+docker exec -it gemflow python3 /app/assign_worker_nodes.py --workers 12 --skip 1
 ```
 
 ---
