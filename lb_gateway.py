@@ -129,7 +129,14 @@ def extract_request_meta(headers, body_bytes):
     except Exception:
         pass
 
-    # 3. 兜底按 Authorization Key 粘滞
+    # 3. 兜底按 Cookie / Ctoken / Authorization 特征指纹粘滞
+    if not session_id:
+        cookie_header = headers.get("Cookie") or headers.get("cookie") or headers.get("X-Gemini-Cookie") or headers.get("x-gemini-cookie") or headers.get("X-Ctoken") or headers.get("x-ctoken")
+        if cookie_header:
+            h = hashlib.md5(cookie_header.encode("utf-8")).hexdigest()[:10]
+            session_id = f"cookie_{h}"
+
+    # 4. 兜底按 Authorization Key 粘滞
     if not session_id:
         auth = headers.get("Authorization") or headers.get("authorization")
         if auth:

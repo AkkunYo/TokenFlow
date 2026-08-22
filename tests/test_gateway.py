@@ -68,6 +68,18 @@ class TestGatewayCore(unittest.TestCase):
         session_id, model, snippet = extract_request_meta(headers, body)
         self.assertTrue(session_id.startswith("auth_"))
 
+    def test_custom_cookie_ctoken_header(self):
+        # 1. 测试 X-Gemini-Cookie Header
+        headers = {"X-Gemini-Cookie": "SIDCC=dummy-sidcc-token; __Secure-1PSID=xyz"}
+        body = b"{}"
+        session_id, _, _ = extract_request_meta(headers, body)
+        self.assertTrue(session_id.startswith("cookie_"))
+
+        # 2. 测试 X-Ctoken Header
+        headers2 = {"X-Ctoken": "ctoken_secret_value_123"}
+        session_id2, _, _ = extract_request_meta(headers2, body)
+        self.assertTrue(session_id2.startswith("cookie_"))
+
     def test_sticky_session_pinning(self):
         # 第一次请求分配 Worker
         worker1, route1 = select_worker("ctx_test_session_1")
