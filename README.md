@@ -28,8 +28,7 @@
 3. 🛡️ **Automatic Failover & Retry**:
    - Transparently catches `429` (Rate Limited), `5xx` server errors, or dropouts, automatically re-routing to an alternate healthy worker within seconds while applying a 20-second cooling penalty to failed nodes.
 4. 🌐 **Dynamic Multi-Egress Proxies (Mihomo Integration)**:
-   - Worker 1 defaults to direct native network.
-   - Workers 2..N are assigned isolated proxy egress ports (`19002..19000+N`) backed by auto-latency-tested proxy groups.
+   - When proxy subscription is provided, all workers (1..N) are assigned isolated proxy egress ports (`19001..19000+N`) backed by auto-latency-tested proxy groups, ensuring compatibility in restricted network environments.
    - Graceful fallback: defaults to native direct mode if no proxy subscription is provided.
 5. 🌊 **Native Zero-Buffer Streaming**:
    - Full passthrough for SSE (Server-Sent Events) and chunked transfer encoding.
@@ -72,9 +71,9 @@ Google Gemini models implement **Prompt KV Prefix Caching**. Random or naive rou
         │   Worker 1   │ (:9001)   │   Worker 2   │(:9002│   Worker 3   │(:9003│   Worker N   │ (:9000+N)
         └──────┬───────┘           └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
                │                          │                     │                     │
-               ▼ (Native Direct)          ▼ (Mihomo :19002)     ▼ (Mihomo :19003)     ▼ (Mihomo :19000+N)
+               ▼ (Mihomo :19001 / Direct) ▼ (Mihomo :19002)     ▼ (Mihomo :19003)     ▼ (Mihomo :19000+N)
         ┌──────────────┐           ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-        │ DIRECT Egress│           │ Proxy Node A │      │ Proxy Node B │      │ Proxy Node N │
+        │ Proxy/Direct │           │ Proxy Node A │      │ Proxy Node B │      │ Proxy Node N │
         └──────┬───────┘           └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
                │                          │                     │                     │
                └──────────────────────────┴──────────┬──────────┴─────────────────────┘

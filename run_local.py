@@ -64,6 +64,9 @@ def fetch_latest_upstream(target_path, force=False):
         return True
 
     return False
+
+
+def terminate_all(signum=None, frame=None):
     print("\n[gemflow] Shutting down all services...")
     for p in PROCESSES:
         try:
@@ -107,7 +110,7 @@ def generate_mihomo_config(worker_count, sub_urls):
 """
 
     listeners_block = "\nlisteners:\n"
-    for i in range(1, worker_count):
+    for i in range(worker_count):
         proxy_port = BASE_PROXY_PORT + i + 1
         listeners_block += f"""  - name: mixed-{proxy_port}
     type: mixed
@@ -151,7 +154,7 @@ def main():
         sub_urls.extend([line.strip() for line in env_subs.splitlines() if line.strip()])
 
     use_proxies = False
-    if args.workers > 1 and sub_urls:
+    if sub_urls:
         print(f"[gemflow] Configuring Mihomo for {args.workers} workers using {len(sub_urls)} subscription source(s)...")
         if generate_mihomo_config(args.workers, sub_urls):
             # 检查 mihomo 二进制是否在 PATH 中
@@ -178,7 +181,7 @@ def main():
         wid = i + 1
         wport = BASE_WORKER_PORT + wid
         proxy = None
-        if i > 0 and use_proxies:
+        if use_proxies:
             proxy = f"http://127.0.0.1:{BASE_PROXY_PORT + wid}"
         workers.append({"id": wid, "port": wport, "proxy": proxy})
 

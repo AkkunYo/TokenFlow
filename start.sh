@@ -65,7 +65,7 @@ fi
 
 # 1. 检查并准备订阅与 Mihomo 代理配置
 USE_PROXIES=false
-if [ "$WORKER_COUNT" -gt 1 ] && [ -n "$PROVIDER_URLS" ]; then
+if [ -n "$PROVIDER_URLS" ]; then
     echo "[Mihomo] Generating proxy configuration for $WORKER_COUNT workers..."
     cp "$APP_DIR/mihomo.template.yaml" "$MIHOMO_CONFIG"
 
@@ -90,9 +90,9 @@ EOF
         fi
     done
 
-    # 注入 listeners (为 Worker 2..N 创建专属端口)
+    # 注入 listeners (为所有 Worker 1..N 创建专属端口 19001..19000+N)
     echo "listeners:" >> "$MIHOMO_CONFIG"
-    for ((i=1; i<WORKER_COUNT; i++)); do
+    for ((i=0; i<WORKER_COUNT; i++)); do
         PROXY_PORT=$((BASE_PROXY_PORT + i + 1))
         cat <<EOF >> "$MIHOMO_CONFIG"
   - name: mixed-$PROXY_PORT
@@ -114,7 +114,7 @@ EOF
         echo "[Mihomo] Warning: mihomo failed to start. Falling back to direct native routing."
     fi
 else
-    echo "[Info] Running in DIRECT mode (No subscription provided or single worker)."
+    echo "[Info] Running in DIRECT mode (No subscription provided)."
 fi
 
 # 2. 生成 workers.json
@@ -123,11 +123,11 @@ for ((i=0; i<WORKER_COUNT; i++)); do
     W_ID=$((i + 1))
     W_PORT=$((BASE_WORKER_PORT + W_ID))
 
-    if [ "$i" -eq 0 ] || [ "$USE_PROXIES" != "true" ]; then
-        PROXY_URL="null"
-    else
+    if [ "$USE_PROXIES" = "true" ]; then
         PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
         PROXY_URL="\"http://127.0.0.1:$PROXY_PORT\""
+    else
+        PROXY_URL="null"
     fi
 
     COMMA=","
@@ -150,7 +150,7 @@ for ((i=0; i<WORKER_COUNT; i++)); do
 
     # 生成 config.json
     W_PROXY=""
-    if [ "$i" -gt 0 ] && [ "$USE_PROXIES" = "true" ]; then
+    if [ "$USE_PROXIES" = "true" ]; then
         PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
         W_PROXY="http://127.0.0.1:$PROXY_PORT"
     fi
