@@ -65,6 +65,28 @@ fi
 
 # 1. 检查并准备订阅与 Mihomo 代理配置
 USE_PROXIES=false
+IS_CN_HOST=false
+
+# 预检宿主机直连 IP 归属地与网络环境
+echo "[Network] Inspecting host native network environment..."
+GEO_COUNTRY=$(curl -fsSL --connect-timeout 2 -m 4 "http://ip-api.com/line?fields=countryCode" 2>/dev/null || curl -fsSL --connect-timeout 2 -m 4 "https://ipinfo.io/country" 2>/dev/null || true)
+GEO_COUNTRY=$(echo "$GEO_COUNTRY" | tr -d '\r\n ' | tr '[:lower:]' '[:upper:]')
+
+if [ "$GEO_COUNTRY" = "CN" ]; then
+    IS_CN_HOST=true
+    echo "[Network] Detected host native IP in China ($GEO_COUNTRY). Worker-1 will be routed through proxy."
+elif [ -n "$GEO_COUNTRY" ]; then
+    echo "[Network] Detected host native IP overseas ($GEO_COUNTRY). Worker-1 will use DIRECT connection."
+else
+    # 兜底测试 Google 直连连通性
+    if ! curl -fsSL --connect-timeout 2 -m 3 "https://www.gstatic.com/generate_204" >/dev/null 2>&1; then
+        IS_CN_HOST=true
+        echo "[Network] Direct Google connection blocked. Worker-1 will be routed through proxy."
+    else
+        echo "[Network] Direct Google connection available. Worker-1 will use DIRECT connection."
+    fi
+fi
+
 if [ -n "$PROVIDER_URLS" ]; then
     echo "[Mihomo] Generating proxy configuration for $WORKER_COUNT workers..."
     cp "$APP_DIR/mihomo.template.yaml" "$MIHOMO_CONFIG"
@@ -124,8 +146,12 @@ for ((i=0; i<WORKER_COUNT; i++)); do
     W_PORT=$((BASE_WORKER_PORT + W_ID))
 
     if [ "$USE_PROXIES" = "true" ]; then
-        PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
-        PROXY_URL="\"http://127.0.0.1:$PROXY_PORT\""
+        if [ "$i" -eq 0 ] && [ "$IS_CN_HOST" != "true" ]; then
+            PROXY_URL="null"
+        else
+            PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
+            PROXY_URL="\"http://127.0.0.1:$PROXY_PORT\""
+        fi
     else
         PROXY_URL="null"
     fi
@@ -151,8 +177,10 @@ for ((i=0; i<WORKER_COUNT; i++)); do
     # 生成 config.json
     W_PROXY=""
     if [ "$USE_PROXIES" = "true" ]; then
-        PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
-        W_PROXY="http://127.0.0.1:$PROXY_PORT"
+        if [ "$i" -gt 0 ] || [ "$IS_CN_HOST" = "true" ]; then
+            PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
+            W_PROXY="http://127.0.0.1:$PROXY_PORT"
+        fi
     fi
 
     cat <<EOF > "$W_DIR/config.json"

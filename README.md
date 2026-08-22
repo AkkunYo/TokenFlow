@@ -28,7 +28,8 @@
 3. 🛡️ **Automatic Failover & Retry**:
    - Transparently catches `429` (Rate Limited), `5xx` server errors, or dropouts, automatically re-routing to an alternate healthy worker within seconds while applying a 20-second cooling penalty to failed nodes.
 4. 🌐 **Dynamic Multi-Egress Proxies (Mihomo Integration)**:
-   - When proxy subscription is provided, all workers (1..N) are assigned isolated proxy egress ports (`19001..19000+N`) backed by auto-latency-tested proxy groups, ensuring compatibility in restricted network environments.
+   - Auto-detects host network location at startup: if deployed on Mainland China (CN) IP or restricted network, Worker 1 automatically routes through proxy (`19001`). On overseas host IPs, Worker 1 enjoys direct native network.
+   - Workers 2..N are assigned isolated proxy egress ports (`19002..19000+N`) backed by auto-latency-tested proxy groups.
    - Graceful fallback: defaults to native direct mode if no proxy subscription is provided.
 5. 🌊 **Native Zero-Buffer Streaming**:
    - Full passthrough for SSE (Server-Sent Events) and chunked transfer encoding.

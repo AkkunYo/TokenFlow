@@ -85,6 +85,44 @@ def terminate_all(signum=None, frame=None):
     sys.exit(0)
 
 
+def detect_is_cn_host():
+    """检测宿主机原生直连 IP 是否在中国大陆 (CN) 或直连 Google 受限"""
+    # 1. 尝试 ip-api.com
+    try:
+        req = urllib.request.Request("http://ip-api.com/line?fields=countryCode", headers={"User-Agent": "curl/7.88.1"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            code = resp.read().decode("utf-8").strip().upper()
+            if code == "CN":
+                return True
+            if code:
+                return False
+    except Exception:
+        pass
+
+    # 2. 尝试 ipinfo.io
+    try:
+        req = urllib.request.Request("https://ipinfo.io/country", headers={"User-Agent": "curl/7.88.1"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            code = resp.read().decode("utf-8").strip().upper()
+            if code == "CN":
+                return True
+            if code:
+                return False
+    except Exception:
+        pass
+
+    # 3. 兜底测试 Google 直连
+    try:
+        req = urllib.request.Request("https://www.gstatic.com/generate_204")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 204:
+                return False
+    except Exception:
+        return True
+
+    return False
+
+
 def generate_mihomo_config(worker_count, sub_urls):
     if not os.path.exists(TEMPLATE_YAML):
         print(f"[Warning] Template {TEMPLATE_YAML} not found. Skipping proxy setup.")
@@ -154,6 +192,7 @@ def main():
         sub_urls.extend([line.strip() for line in env_subs.splitlines() if line.strip()])
 
     use_proxies = False
+    is_cn_host = False
     if sub_urls:
         print(f"[gemflow] Configuring Mihomo for {args.workers} workers using {len(sub_urls)} subscription source(s)...")
         if generate_mihomo_config(args.workers, sub_urls):
@@ -175,6 +214,13 @@ def main():
             else:
                 print("[Mihomo] Binary 'mihomo' not found in PATH. Defaulting to DIRECT connections.")
 
+    if use_proxies:
+        is_cn_host = detect_is_cn_host()
+        if is_cn_host:
+            print("[Network] Host native IP detected in China (or direct Google blocked). Worker-1 proxy enabled.")
+        else:
+            print("[Network] Host native IP detected overseas. Worker-1 DIRECT native connection enabled.")
+
     # 2. 生成 workers.json
     workers = []
     for i in range(args.workers):
@@ -182,7 +228,8 @@ def main():
         wport = BASE_WORKER_PORT + wid
         proxy = None
         if use_proxies:
-            proxy = f"http://127.0.0.1:{BASE_PROXY_PORT + wid}"
+            if i > 0 or is_cn_host:
+                proxy = f"http://127.0.0.1:{BASE_PROXY_PORT + wid}"
         workers.append({"id": wid, "port": wport, "proxy": proxy})
 
     with open(WORKERS_JSON, "w", encoding="utf-8") as f:
