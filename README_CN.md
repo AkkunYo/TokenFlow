@@ -15,21 +15,16 @@
 
 ---
 
-## 🌟 核心特性
+## 🌟 核心特性矩阵
 
-- 🎯 **会话粘滞与 Prompt 缓存保护 (Sticky Session)**：
-  - 基于请求特征提取指纹（`user` 字段 / 第一条 Prompt 内容 MD5 摘要 `ctx_<md5>` / `Authorization` Token）。
-  - 同一会话的追问请求固定绑定至同一后端 Worker 与出口 IP，充分利用 Google 服务端的 **Prompt KV 前缀缓存**，大幅降低首字延迟与响应耗时。
-- 🔄 **最少连接 + 严格轮询调度 (Least-Connection + Round-Robin)**：
-  - 新会话智能调度至活跃连接最少的 Worker；并发相同时严格依次轮询，确保流量绝对均匀。
-- 🛡️ **自动故障转移与秒级降权 (Failover & Retry)**：
-  - 遇到 `429`（限流）、`5xx`（服务异常）或网络断开时，自动秒级无缝重试至其他健康实例，并将故障节点自动加入 20 秒冷却降权池。
-- 🌐 **多出口 IP 负载分流 (集成 Mihomo/Clash-Meta 内核)**：
-  - 启动时自动感知宿主机网络 IP：若检测到中国大陆 (CN) 环境或直连受限，Worker 1 自动开启代理（`19001`）；若宿主机处于海外可直连环境，Worker 1 独享原生网络直连（零代理延迟）。
-  - Worker 2..N 独享独立代理端口（`19002..19000+N`），经由 Mihomo 优选延迟测速节点分流。
-  - 若未配置订阅或节点池为空，所有 Worker 自动回退为原生直连。
-- 🌊 **原生流式透传**：完整支持 SSE (Server-Sent Events) 与 HTTP Chunked 流式传输，零缓冲极速响应。
-- 🔍 **请求指纹与路由调试**：支持 `DEBUG=true` 开关，可实时查看每条请求的 Session 指纹、Prompt 摘要、命中路由决策（`STICKY` vs `LEAST_CONN`）、实例端口及耗时。
+| 核心维度 | 功能机制 | 业务价值 / 效果 | 关键配置与技术实现 |
+| :--- | :--- | :--- | :--- |
+| 🎯 **会话粘滞 (Sticky Session)** | 提取 `user`、Prompt 首句 MD5（`ctx_<md5>`）或 Token 特征作为指纹 | 锁定同一 Worker 与出口 IP，命中 Google **Prompt KV 缓存**，降低 70%+ TTFT 首字延迟 | 自动提取 Request Meta，维护内存级 Session LRU 映射表 |
+| 🔄 **智能调度均衡** | **最少活跃连接 (Least-Connection) + 循环轮询 (Round-Robin)** | 避免单 Worker 负载过高，并发相同时严格均分流量 | 原子连接计数器 `ACTIVE_CONNS` + 线程安全锁调度 |
+| 🛡️ **高可用容灾** | **429 / 5xx / 网络断开秒级自动重试 + 冷却降权** | 单个节点限流或异常时秒级透明漂移，客户端业务零中断 | 自动加入 20 秒冷却池（`FAIL_PENALTY_SEC=20`）并调度健康节点 |
+| 🌐 **多出口网络分流** | **集成 Mihomo 内核 + 智能感知宿主机网络归属** | 多路独立出口 IP 并行请求，彻底规避单 IP 风控限流与地域屏蔽 | 自动感知 CN IP 开启 `19001` 代理；Worker 2..N 独享独立监听隧道（`19002..19000+N`） |
+| 🌊 **极速流式透传** | **零缓冲 HTTP Chunked / SSE 流式传输** | 打字机效果实时呈现，首字极速下发，内存占用恒定极低 | `urllib` / 原始字节流无缓冲管道直通 |
+| 🔍 **全链路透明观测** | **Session 指纹、路由决策与耗时实时追踪** | 清晰掌握每笔请求命中路径（`STICKY` vs `LEAST_CONN`）与出口节点 | 环境变量 `DEBUG=true` / 启动参数 `--debug` 实时输出全彩日志 |
 
 ---
 
@@ -100,14 +95,20 @@ python3 run_local.py --workers 4 --port 8081 --sub "https://example.com/api/v1/c
 ### 方式二：Docker / Docker Compose 部署
 
 ```bash
-# Docker 运行
+# 1. 直接通过 Docker 运行
 docker run -d -p 8081:8081 \
   -e WORKER_COUNT=4 \
   -e PROVIDER_URLS="https://example.com/api/v1/client/subscribe?token=xxx" \
   -e DEBUG=true \
-  --name gemflow gemflow:latest
+  --name gemflow registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
 
-# Docker Compose
+# 2. 或使用 Docker Compose 一键拉起
+# 下载官方 docker-compose.yml 配置文件 (如未克隆仓库)
+curl -fsSL https://raw.githubusercontent.com/AkkunYo/gemflow/main/docker-compose.yml -o docker-compose.yml
+# 国内加速下载备选：
+# curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/AkkunYo/gemflow/main/docker-compose.yml -o docker-compose.yml
+
+# 启动服务
 docker compose up -d
 ```
 

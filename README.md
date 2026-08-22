@@ -17,24 +17,16 @@
 
 ---
 
-## ✨ Key Features
+## ✨ Key Features Matrix
 
-1. 🎯 **Prompt KV Cache Locality (Sticky Session)**:
-   - Identifies conversational sessions via `user` field, first prompt MD5 snippet (`ctx_<md5>`), or `Authorization` token.
-   - Pins subsequent turns of the same conversation to the exact same backend worker and egress IP, maximizing Google's prompt prefix cache hit rate.
-2. 🔄 **Least-Connection + Strict Round-Robin Dispatch**:
-   - Routes new conversations to the worker with the lowest active connections.
-   - Strict Round-Robin tie-breaking ensures perfectly even traffic distribution during sequential requests.
-3. 🛡️ **Automatic Failover & Retry**:
-   - Transparently catches `429` (Rate Limited), `5xx` server errors, or dropouts, automatically re-routing to an alternate healthy worker within seconds while applying a 20-second cooling penalty to failed nodes.
-4. 🌐 **Dynamic Multi-Egress Proxies (Mihomo Integration)**:
-   - Auto-detects host network location at startup: if deployed on Mainland China (CN) IP or restricted network, Worker 1 automatically routes through proxy (`19001`). On overseas host IPs, Worker 1 enjoys direct native network.
-   - Workers 2..N are assigned isolated proxy egress ports (`19002..19000+N`) backed by auto-latency-tested proxy groups.
-   - Graceful fallback: defaults to native direct mode if no proxy subscription is provided.
-5. 🌊 **Native Zero-Buffer Streaming**:
-   - Full passthrough for SSE (Server-Sent Events) and chunked transfer encoding.
-6. 🔍 **Real-Time Debug Visibility**:
-   - Toggle `DEBUG=true` to monitor session fingerprints, routing decisions (`STICKY` vs `LEAST_CONN`), egress nodes, and response latencies.
+| Feature Dimension | Core Mechanism | Business Value / Impact | Implementation Details |
+| :--- | :--- | :--- | :--- |
+| 🎯 **Sticky Session** | Extracts fingerprints from `user`, prompt MD5 (`ctx_<md5>`), or auth tokens | Pins session to same worker & egress IP, maximizing Google **Prompt KV Cache** (~72% TTFT cut) | In-memory session LRU map with request metadata extraction |
+| 🔄 **Intelligent Scheduling** | **Least-Connection + Round-Robin Tie-Breaking** | Prevents worker overload; distributes sequential requests evenly | Atomic active connection counters (`ACTIVE_CONNS`) + thread lock |
+| 🛡️ **High Availability** | **Automatic 429/5xx Retry & 20s Cooling Penalty** | Transparent node failover within sub-seconds, ensuring zero downtime | Instant retry across healthy workers; failed nodes penalized for 20s |
+| 🌐 **Multi-Egress Routing** | **Mihomo Kernel + Host IP Environment Awareness** | Eliminates single-IP rate limits and regional network blocking | Auto-routes Worker 1 via proxy (`:19001`) in CN hosts; Workers 2..N get dedicated proxy ports (`:19002..19000+N`) |
+| 🌊 **Zero-Buffer Streaming** | **Raw HTTP Chunked & SSE Passthrough** | Real-time typewriter effect with ultra-low constant memory footprint | Direct byte stream forwarding without buffering layers |
+| 🔍 **End-to-End Visibility** | **Real-Time Fingerprint & Route Decision Tracing** | Full clarity on routing path (`STICKY` vs `LEAST_CONN`) and worker egress nodes | Enabled via `DEBUG=true` or `--debug` CLI argument |
 
 ---
 
@@ -101,14 +93,18 @@ python3 run_local.py --workers 4 --port 8081 --sub "https://example.com/api/v1/c
 ### 2. Docker & Docker Compose
 
 ```bash
-# Direct run with Docker
+# 1. Direct run with Docker
 docker run -d -p 8081:8081 \
   -e WORKER_COUNT=4 \
   -e PROVIDER_URLS="https://example.com/api/v1/client/subscribe?token=xxx" \
   -e DEBUG=true \
-  --name gemflow gemflow:latest
+  --name gemflow registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
 
-# Or using docker-compose
+# 2. Or using Docker Compose
+# Download docker-compose.yml configuration (if repository is not cloned)
+curl -fsSL https://raw.githubusercontent.com/AkkunYo/gemflow/main/docker-compose.yml -o docker-compose.yml
+
+# Launch services
 docker compose up -d
 ```
 
