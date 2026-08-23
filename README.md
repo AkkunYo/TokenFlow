@@ -181,6 +181,8 @@ print()
 | `WORKER_COUNT` | `1` | Number of worker instances to launch (`1` = Direct only, `N` = 1 Direct + N-1 Proxy workers) |
 | `PROVIDER_URLS` | `""` | Proxy subscription URLs (supports Clash YAML links as well as V2Ray / Base64 / VMess / VLESS / Trojan subscription formats, multi-line supported) |
 | `AUTO_UPDATE_UPSTREAM` | `true` | Automatically fetch latest `gemini_web2api.py` on container/script startup |
+| `STREAM_CONNECT_TIMEOUT_SEC` | `45` | Time-to-first-byte budget. An unresponsive worker fails fast and the request is retried on another worker instead of stalling |
+| `STREAM_IDLE_TIMEOUT_SEC` | `75` | Max idle gap once streaming has started. The timer resets on every chunk received; raise it for slower overseas proxy paths |
 | `DEBUG` | `false` | Enable verbose logging (`true`/`1`/`yes`) |
 
 ---

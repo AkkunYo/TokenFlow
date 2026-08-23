@@ -375,3 +375,115 @@ class TestResponseHeaderPolicy(unittest.TestCase):
     def test_content_length_not_filtered(self):
         """Content-Length 必须透传，否则非流式响应也失去边界"""
         self.assertNotIn("content-length", lb_gateway.SKIPPED_RESPONSE_HEADERS)
+
+
+class TestStreamTimeoutConfig(unittest.TestCase):
+    """超时配置读取：环境变量可调，非法值不得让启动失败"""
+
+    def _reload(self):
+        import importlib
+        importlib.reload(lb_gateway)
+        return lb_gateway
+
+    def tearDown(self):
+        for k in ("STREAM_CONNECT_TIMEOUT_SEC", "STREAM_IDLE_TIMEOUT_SEC"):
+            os.environ.pop(k, None)
+        self._reload()
+
+    def test_defaults_split_connect_and_idle(self):
+        """两段超时必须分离，且首字节超时明显小于旧的 180s 单一超时"""
+        g = self._reload()
+        self.assertEqual(g.STREAM_CONNECT_TIMEOUT, 45.0)
+        self.assertEqual(g.STREAM_IDLE_TIMEOUT, 75.0)
+        self.assertLess(g.STREAM_CONNECT_TIMEOUT, 180)
+
+    def test_env_override(self):
+        os.environ["STREAM_CONNECT_TIMEOUT_SEC"] = "20"
+        os.environ["STREAM_IDLE_TIMEOUT_SEC"] = "90"
+        g = self._reload()
+        self.assertEqual(g.STREAM_CONNECT_TIMEOUT, 20.0)
+        self.assertEqual(g.STREAM_IDLE_TIMEOUT, 90.0)
+
+    def test_invalid_value_falls_back_to_default(self):
+        os.environ["STREAM_CONNECT_TIMEOUT_SEC"] = "not-a-number"
+        g = self._reload()
+        self.assertEqual(g.STREAM_CONNECT_TIMEOUT, 45.0)
+
+    def test_below_minimum_is_clamped(self):
+        os.environ["STREAM_IDLE_TIMEOUT_SEC"] = "0.01"
+        g = self._reload()
+        self.assertEqual(g.STREAM_IDLE_TIMEOUT, 1.0)
+
+    def test_blank_value_uses_default(self):
+        os.environ["STREAM_IDLE_TIMEOUT_SEC"] = "   "
+        g = self._reload()
+        self.assertEqual(g.STREAM_IDLE_TIMEOUT, 75.0)
+
+
+class TestStreamIdleTimeoutHelper(unittest.TestCase):
+    """socket 空闲超时设置：拿不到底层 socket 时必须优雅降级"""
+
+    def test_returns_false_when_socket_unreachable(self):
+        class NoSock:
+            pass
+        self.assertFalse(lb_gateway._set_stream_idle_timeout(NoSock(), 30))
+
+    def test_sets_timeout_on_real_socket(self):
+        import socket as _s
+
+        class FakeSock:
+            def __init__(self):
+                self.applied = None
+
+            def settimeout(self, v):
+                self.applied = v
+
+        class Raw:
+            def __init__(self, sock):
+                self._sock = sock
+
+        class Fp:
+            def __init__(self, sock):
+                self.raw = Raw(sock)
+
+        class Resp:
+            def __init__(self, sock):
+                self.fp = Fp(sock)
+
+        sock = FakeSock()
+        self.assertTrue(lb_gateway._set_stream_idle_timeout(Resp(sock), 42))
+        self.assertEqual(sock.applied, 42)
+
+    def test_swallows_settimeout_failure(self):
+        class BadSock:
+            def settimeout(self, v):
+                raise OSError("nope")
+
+        class Raw:
+            def __init__(self):
+                self._sock = BadSock()
+
+        class Fp:
+            def __init__(self):
+                self.raw = Raw()
+
+        class Resp:
+            def __init__(self):
+                self.fp = Fp()
+
+        self.assertFalse(lb_gateway._set_stream_idle_timeout(Resp(), 30))
+
+
+class TestStreamChunkSemantics(unittest.TestCase):
+    """read1 语义保障：卡死时已到达的数据不得随超时一起丢弃"""
+
+    def test_read1_is_used_not_read(self):
+        """
+        回归锁定：转发循环必须用 read1。
+        read(n) 会阻塞到凑满 n 字节，上游卡死时缓冲区数据随超时丢弃，
+        下游因此看到零负载 (empty_stream)。
+        """
+        import inspect
+        src = inspect.getsource(lb_gateway.LBProxyHandler._proxy_request)
+        self.assertIn("read1(", src)
+        self.assertNotIn("resp.read(STREAM_CHUNK_SIZE)", src)

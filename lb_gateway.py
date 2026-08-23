@@ -14,6 +14,7 @@ import os
 import json
 import time
 import hashlib
+import socket
 import threading
 import argparse
 from collections import OrderedDict
@@ -37,6 +38,33 @@ MAX_SESSIONS = 50000    # 最大缓存会话数上限 (LRU 淘汰防止内存无
 FAIL_PENALTY_SEC = 20   # 故障节点冷却降权时间 (秒)
 PROBE_TIMEOUT = 5       # 单个出口 IP 探测源的超时 (秒)
 
+
+def _env_timeout(name, default, minimum=1.0):
+    """读取环境变量中的超时配置，非法值回退默认并告警"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        print(f"[LB] Invalid {name}={raw!r}, using default {default}s", flush=True)
+        return default
+    if val < minimum:
+        print(f"[LB] {name}={val} below minimum {minimum}s, using {minimum}s", flush=True)
+        return minimum
+    return val
+
+
+# 上游超时拆成两段，避免单一大超时把重试机会浪费掉：
+# 1. CONNECT_TIMEOUT 覆盖"连接建立 + 响应头到达"。Worker 完全无响应时快速失败，
+#    让 exclude_wids 重试机制把请求转给其他健康 Worker。
+# 2. STREAM_IDLE_TIMEOUT 覆盖"已开始吐数据但中途卡住"。每次读到 chunk 即重置，
+#    连续无数据超过该阈值才判定截断。
+# 两者分离后，慢 Worker 不再拖满整个上限才失败。
+STREAM_CONNECT_TIMEOUT = _env_timeout("STREAM_CONNECT_TIMEOUT_SEC", 45.0)
+STREAM_IDLE_TIMEOUT = _env_timeout("STREAM_IDLE_TIMEOUT_SEC", 75.0)
+STREAM_CHUNK_SIZE = 8192
+
 # 不可透传的响应头：
 # - 逐跳头 (hop-by-hop) 由本网关自行决定，不能照搬上游
 # - Server / Date 由 send_response() 自动补齐，透传会造成重复头
@@ -44,6 +72,28 @@ SKIPPED_RESPONSE_HEADERS = frozenset({
     "transfer-encoding", "connection", "keep-alive", "server", "date",
     "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade",
 })
+
+
+def _set_stream_idle_timeout(resp, timeout):
+    """
+    将底层 socket 超时改为流式空闲超时。
+
+    urlopen 的 timeout 只应覆盖"连接建立 + 响应头到达"；响应头拿到后
+    重设 socket 超时，read 期间连续无数据超过 timeout 才抛 socket.timeout。
+    每次成功读取都会重新开始计时，故等价于"空闲超时"而非总时长上限。
+
+    返回是否成功设置：拿不到底层 socket 时返回 False，
+    调用方据此避免把普通读错误误报为空闲超时。
+    """
+    sock = getattr(getattr(resp, "fp", None), "raw", None)
+    sock = getattr(sock, "_sock", None)
+    if sock is None:
+        return False
+    try:
+        sock.settimeout(timeout)
+        return True
+    except (OSError, AttributeError):
+        return False
 
 
 def log_debug(msg):
@@ -394,7 +444,8 @@ class LBProxyHandler(BaseHTTPRequestHandler):
                 )
 
                 try:
-                    resp = urllib.request.urlopen(req, timeout=180)
+                    # 仅覆盖"连接建立 + 响应头到达"，不覆盖整个流生命周期
+                    resp = urllib.request.urlopen(req, timeout=STREAM_CONNECT_TIMEOUT)
 
                     upstream_headers = resp.getheaders()
                     has_content_length = any(
@@ -417,32 +468,56 @@ class LBProxyHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     headers_sent = True
 
+                    # 响应头已到达，后续 read 改用空闲超时：
+                    # 每次成功读到数据即重置计时，连续无数据超过阈值才判定卡死。
+                    idle_timeout_armed = _set_stream_idle_timeout(resp, STREAM_IDLE_TIMEOUT)
+
                     # 流式透传：区分"客户端断开"与"上游截断"
                     client_gone = False
                     upstream_error = None
+                    bytes_sent = 0
                     try:
                         while True:
-                            chunk = resp.read(8192)
+                            # 必须用 read1：read(n) 会阻塞直到凑满 n 字节或流结束，
+                            # 上游卡死时已到达的数据会滞留在缓冲区并随超时一起丢弃，
+                            # 下游因此看到"零负载"。read1 有多少给多少，逐块转发。
+                            chunk = resp.read1(STREAM_CHUNK_SIZE)
                             if not chunk:
                                 break
                             try:
                                 self.wfile.write(chunk)
                                 self.wfile.flush()
+                                bytes_sent += len(chunk)
                             except (ConnectionResetError, BrokenPipeError):
                                 client_gone = True
                                 break
                     except Exception as stream_err:
                         upstream_error = stream_err
                     finally:
-                        resp.close()
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
 
                     elapsed = time.time() - start_time
                     if upstream_error is not None:
-                        # 上游中途断流：响应已部分下发，无法重试，只能降权并如实记账
+                        # 上游中途断流：响应头已下发，无法再重试，只能降权并如实记账。
+                        # 必须区分"一个字节都没发出"与"发了一部分"：前者下游会判定
+                        # 为空响应 (empty_stream)，笼统写成"已部分发送"会误导排查。
                         record_worker_failure(wid)
+                        is_idle_timeout = isinstance(upstream_error, socket.timeout)
+                        cause = (
+                            f"no data for {STREAM_IDLE_TIMEOUT:.0f}s (idle timeout)"
+                            if is_idle_timeout and idle_timeout_armed
+                            else f"{type(upstream_error).__name__}: {upstream_error}"
+                        )
+                        if bytes_sent == 0:
+                            detail = "no bytes were ever forwarded (downstream sees an empty stream)"
+                        else:
+                            detail = f"{bytes_sent} byte(s) already forwarded downstream"
                         log_debug(
-                            f"[Req #{req_id}] Worker-{wid} stream truncated after {elapsed:.2f}s "
-                            f"({type(upstream_error).__name__}: {upstream_error}); response already partially sent."
+                            f"[Req #{req_id}] Worker-{wid} stream aborted after {elapsed:.2f}s "
+                            f"-> {cause}; {detail}."
                         )
                     else:
                         record_worker_success(wid)

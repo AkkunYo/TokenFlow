@@ -185,6 +185,8 @@ print()
 | `WORKER_COUNT` / `-w` | `1` | 后端实例数。为 `1` 时直连；为 `N` 时开启多实例多线路负载 |
 | `PROVIDER_URLS` / `-s` | `""` | 代理订阅链接（支持 Clash YAML 配置链接以及标准 V2Ray / Base64 / VMess / VLESS / Trojan 格式订阅，支持多行填写） |
 | `AUTO_UPDATE_UPSTREAM` | `true` | 容器/脚本启动时是否自动从 upstream 拉取最新 `gemini_web2api.py` |
+| `STREAM_CONNECT_TIMEOUT_SEC` | `45` | 首字节超时：Worker 在此时间内未返回响应头即判定失败并重试其他 Worker |
+| `STREAM_IDLE_TIMEOUT_SEC` | `75` | 流式空闲超时：已开始吐数据后，连续无新数据超过此时长才判定截断（出海代理链路慢可调大） |
 | `DEBUG` / `--debug` | `false` | 是否开启详细调试日志 (`true`/`1`/`yes`) |
 
 ---
