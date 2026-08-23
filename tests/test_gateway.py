@@ -487,3 +487,83 @@ class TestStreamChunkSemantics(unittest.TestCase):
         src = inspect.getsource(lb_gateway.LBProxyHandler._proxy_request)
         self.assertIn("read1(", src)
         self.assertNotIn("resp.read(STREAM_CHUNK_SIZE)", src)
+
+
+class TestProbeRateLimiting(unittest.TestCase):
+    """探测频率必须落在 geo-IP 接口配额之下，否则限流与快轮询会互相强化成自锁"""
+
+    def test_interval_respects_floor_for_small_deployments(self):
+        self.assertEqual(lb_gateway.compute_probe_interval(1),
+                         lb_gateway.PROBE_MIN_RETRY_INTERVAL)
+        self.assertEqual(lb_gateway.compute_probe_interval(4),
+                         lb_gateway.PROBE_MIN_RETRY_INTERVAL)
+
+    def test_interval_scales_with_worker_count(self):
+        """Worker 越多间隔越长，保证每分钟请求量不超配额"""
+        allowed = lb_gateway.PROBE_RATE_LIMIT_PER_MIN * lb_gateway.PROBE_RATE_SAFETY
+        for n in (8, 12, 24, 50):
+            interval = lb_gateway.compute_probe_interval(n)
+            rate = n / interval * 60.0
+            self.assertLessEqual(
+                rate, allowed + 1e-6,
+                f"{n} workers -> {rate:.1f}/min exceeds allowed {allowed:.1f}/min")
+
+    def test_interval_never_exceeds_hard_limit(self):
+        """任何规模下都必须低于接口硬限流值"""
+        for n in (1, 4, 8, 12, 24, 50, 100):
+            rate = n / lb_gateway.compute_probe_interval(n) * 60.0
+            self.assertLess(rate, lb_gateway.PROBE_RATE_LIMIT_PER_MIN)
+
+    def test_interval_handles_zero_and_negative(self):
+        self.assertEqual(lb_gateway.compute_probe_interval(0),
+                         lb_gateway.PROBE_MIN_RETRY_INTERVAL)
+        self.assertEqual(lb_gateway.compute_probe_interval(-3),
+                         lb_gateway.PROBE_MIN_RETRY_INTERVAL)
+
+    def test_cycle_includes_probe_cost(self):
+        """完整周期必须计入探测耗时，只算间隔会高估可完成轮数"""
+        for n in (8, 12, 24):
+            self.assertGreater(lb_gateway.compute_probe_cycle(n),
+                               lb_gateway.compute_probe_interval(n))
+
+    def test_cycle_grows_with_batch_count(self):
+        c4 = lb_gateway.compute_probe_cycle(4, max_concurrency=4)
+        c8 = lb_gateway.compute_probe_cycle(8, max_concurrency=4)
+        self.assertGreater(c8, c4)
+
+    def test_rate_limited_is_not_treated_as_failure(self):
+        """限流只说明探测源不可用，不能作为代理未生效的证据"""
+        workers = [{"id": 1, "port": 9001, "proxy": None},
+                   {"id": 2, "port": 9002, "proxy": "http://127.0.0.1:19002"}]
+        results = [
+            _line(1, "44.196.116.2"),
+            (2, f"[Worker-2 : Port 9002 : Proxy] -> {lb_gateway.RATE_LIMITED_MARKER} (geo-IP lookup throttled)"),
+        ]
+        # Worker-2 被限流，但 Worker-1 直连成功；不应因限流判定为未就绪
+        self.assertFalse(
+            any(lb_gateway.RATE_LIMITED_MARKER not in line
+                and ("Connection Failed" in line or "Probe Failed" in line)
+                for _, line in results))
+
+    def test_real_connection_failure_still_blocks(self):
+        """真正的连接失败仍必须阻止首次打印"""
+        workers = [{"id": 1, "port": 9001, "proxy": None},
+                   {"id": 2, "port": 9002, "proxy": "http://127.0.0.1:19002"}]
+        results = [
+            _line(1, "44.196.116.2"),
+            (2, "[Worker-2 : Port 9002 : Proxy] -> Connection Failed (URLError)"),
+        ]
+        self.assertFalse(lb_gateway.evaluate_egress_readiness(workers, results))
+
+    def test_probe_batching_covers_all_workers(self):
+        """分批并发不得漏掉任何 Worker"""
+        workers = [{"id": i, "port": 9000 + i, "proxy": None} for i in range(1, 10)]
+        orig = lb_gateway.probe_single_worker_egress
+        try:
+            lb_gateway.probe_single_worker_egress = (
+                lambda w, timeout=5: f"[Worker-{w['id']}] -> IP: 1.2.3.{w['id']} [x]")
+            results = lb_gateway._probe_all_workers(workers, max_concurrency=4)
+        finally:
+            lb_gateway.probe_single_worker_egress = orig
+
+        self.assertEqual([wid for wid, _ in results], list(range(1, 10)))

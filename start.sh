@@ -51,6 +51,36 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+# ---------------------------------------------------------------------------
+# 日志体积控制
+#
+# 保活循环以追加方式写日志，避免崩溃重启时清空根因；但追加没有上限，
+# 持续崩溃 (如 Cookie 失效) 下退避封顶 60s 意味着每小时约 60 次 traceback，
+# 在 HF Space 等磁盘配额有限的环境会把磁盘写满。
+# 故每次重启前检查体积，超限则只保留尾部，兼顾"保留最近根因"与"不写满盘"。
+# ---------------------------------------------------------------------------
+LOG_MAX_BYTES="${LOG_MAX_BYTES:-10485760}"   # 单个日志上限，默认 10MB
+LOG_KEEP_LINES="${LOG_KEEP_LINES:-2000}"     # 超限时保留的尾部行数
+
+rotate_log_if_needed() {
+    local logfile="$1"
+    [ -f "$logfile" ] || return 0
+
+    local size
+    size=$(wc -c < "$logfile" 2>/dev/null | tr -d ' ')
+    [ -n "$size" ] || return 0
+    [ "$size" -gt "$LOG_MAX_BYTES" ] 2>/dev/null || return 0
+
+    local tmp="${logfile}.trim"
+    if tail -n "$LOG_KEEP_LINES" "$logfile" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$logfile"
+        echo "[LogRotate] $(basename "$logfile") exceeded ${LOG_MAX_BYTES}B, truncated to last ${LOG_KEEP_LINES} lines." \
+            | tee -a "$logfile"
+    else
+        rm -f "$tmp"
+    fi
+}
+
 echo "[Init] Reclaiming any leftover processes from a previous run..."
 cleanup
 CHILD_PIDS=""
@@ -213,7 +243,9 @@ while read -r W_ID W_PORT W_PROXY_DESC; do
         cd "$W_DIR"
         FAIL=0
         while true; do
-            # 追加写而非覆盖：崩溃重启的瞬间清空日志会让根因永久丢失
+            # 追加写而非覆盖：崩溃重启的瞬间清空日志会让根因永久丢失。
+            # 启动前先做体积检查，防止持续崩溃把磁盘写满。
+            rotate_log_if_needed "$APP_DIR/worker_$W_ID.log"
             python3 "$APP_DIR/gemini_web2api.py" --port "$W_PORT" \
                 --config "$W_DIR/config.json" >> "$APP_DIR/worker_$W_ID.log" 2>&1 || true
             FAIL=$((FAIL + 1))

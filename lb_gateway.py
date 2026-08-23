@@ -65,6 +65,54 @@ STREAM_CONNECT_TIMEOUT = _env_timeout("STREAM_CONNECT_TIMEOUT_SEC", 45.0)
 STREAM_IDLE_TIMEOUT = _env_timeout("STREAM_IDLE_TIMEOUT_SEC", 75.0)
 STREAM_CHUNK_SIZE = 8192
 
+# 出口探测的并发上限与未就绪阶段轮询间隔。
+#
+# 免费 geo-IP 接口按源 IP 限流 (ip-api.com 实测 45 次/分钟)，而每轮探测
+# 要为每个 Worker 各发一次请求。并发上限只能削平瞬时突发，压不下每分钟总量，
+# 故轮询间隔必须随 Worker 数自适应，否则 Worker 一多就会把自己打成限流。
+PROBE_MAX_CONCURRENCY = 4
+PROBE_RATE_LIMIT_PER_MIN = 45   # 免费 geo-IP 接口的实测配额
+PROBE_RATE_SAFETY = 0.6         # 只用配额的一部分，给探测外的调用留余量
+PROBE_MIN_RETRY_INTERVAL = 15.0  # 未就绪阶段的间隔下限
+PROBE_MIN_ROUNDS = 5            # 宣告"代理未生效"前至少要尝试的轮数
+PROBE_MAX_DEADLINE = 600.0      # 首次打印的最长等待 (10 分钟)，避免长时间静默
+
+
+def compute_probe_interval(worker_count, floor=PROBE_MIN_RETRY_INTERVAL):
+    """
+    计算未就绪阶段的安全轮询间隔 (纯函数)。
+
+    每轮消耗 worker_count 次配额，要让速率不超过
+    PROBE_RATE_LIMIT_PER_MIN * PROBE_RATE_SAFETY，间隔至少需要
+    worker_count / 允许速率 分钟。取该值与 floor 的较大者。
+    """
+    if worker_count <= 0:
+        return floor
+    allowed_per_min = max(1.0, PROBE_RATE_LIMIT_PER_MIN * PROBE_RATE_SAFETY)
+    required = worker_count / allowed_per_min * 60.0
+    return max(floor, required)
+
+
+def compute_probe_cycle(worker_count, max_concurrency=PROBE_MAX_CONCURRENCY):
+    """
+    估算一轮探测的完整周期 = 探测耗时 + 轮询间隔 (纯函数)。
+
+    探测按 max_concurrency 分批串行执行，每批最坏耗时约 2 x PROBE_TIMEOUT + 4
+    (两个 geo-IP 源串行 + 回收余量)，故批数越多耗时越长。
+    计算首次打印截止时间时必须用完整周期，只用间隔会高估可完成的轮数。
+    """
+    if worker_count <= 0:
+        return compute_probe_interval(worker_count)
+    batch_size = max(1, int(max_concurrency))
+    batches = (worker_count + batch_size - 1) // batch_size
+    probe_cost = batches * (PROBE_TIMEOUT * 2 + 4)
+    return probe_cost + compute_probe_interval(worker_count)
+
+
+# 探测结果中标记"探测源被限流"的文案。
+# 与 "Connection Failed" 严格区分：限流不代表代理链路有问题。
+RATE_LIMITED_MARKER = "Rate Limited"
+
 # 不可透传的响应头：
 # - 逐跳头 (hop-by-hop) 由本网关自行决定，不能照搬上游
 # - Server / Date 由 send_response() 自动补齐，透传会造成重复头
@@ -599,7 +647,14 @@ def probe_single_worker_egress(worker, timeout=PROBE_TIMEOUT):
     else:
         opener = urllib.request.build_opener()
 
-    info_str = "Unknown / Probe Failed"
+    label = f"Worker-{wid} : Port {wport} : {route_desc}"
+
+    # 免费 IP 归属地接口都有速率限制 (ip-api.com 实测 45 次/分钟)。
+    # 被限流与"代理链路不通"是完全不同的性质，必须分开标记：
+    # 前者只说明探测源暂时不可用，不能作为代理未生效的证据，
+    # 否则会与快轮询构成自锁——越被限流越判定未就绪，越继续快轮询。
+    rate_limited = False
+
     # 1. 尝试 ip-api.com (HTTP, 免 API Key)
     try:
         req = urllib.request.Request("http://ip-api.com/json", headers=headers)
@@ -612,12 +667,15 @@ def probe_single_worker_egress(worker, timeout=PROBE_TIMEOUT):
                     query = data.get("query", "Unknown")
                     org = data.get("org") or data.get("isp") or "Unknown"
                     location = f"{country} ({city})" if city else country
-                    info_str = f"{location} - IP: {query} [{org}]"
-                    return f"[{f'Worker-{wid} : Port {wport} : {route_desc}':<38}] -> {info_str}"
+                    return f"[{label:<38}] -> {location} - IP: {query} [{org}]"
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            rate_limited = True
     except Exception:
         pass
 
     # 2. 兜底尝试 ipinfo.io (HTTPS)
+    last_error = None
     try:
         req = urllib.request.Request("https://ipinfo.io/json", headers=headers)
         with opener.open(req, timeout=timeout) as resp:
@@ -628,12 +686,20 @@ def probe_single_worker_egress(worker, timeout=PROBE_TIMEOUT):
                 city = data.get("city", "")
                 org = data.get("org", "Unknown")
                 location = f"{country} ({city})" if city else country
-                info_str = f"{location} - IP: {ip} [{org}]"
-                return f"[{f'Worker-{wid} : Port {wport} : {route_desc}':<38}] -> {info_str}"
+                return f"[{label:<38}] -> {location} - IP: {ip} [{org}]"
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            rate_limited = True
+        else:
+            last_error = e
     except Exception as e:
-        info_str = f"Connection Failed ({type(e).__name__})"
+        last_error = e
 
-    return f"[{f'Worker-{wid} : Port {wport} : {route_desc}':<38}] -> {info_str}"
+    if rate_limited:
+        return f"[{label:<38}] -> {RATE_LIMITED_MARKER} (geo-IP lookup throttled)"
+    if last_error is not None:
+        return f"[{label:<38}] -> Connection Failed ({type(last_error).__name__})"
+    return f"[{label:<38}] -> Unknown / Probe Failed"
 
 
 def evaluate_egress_readiness(workers, results):
@@ -646,14 +712,20 @@ def evaluate_egress_readiness(workers, results):
       （用于排除 mihomo 尚未就绪、代理端口实际回落直连的情况）
 
     不要求各代理出口 IP 互不相同：健康节点少于 Worker 数时轮转复用是合法结果。
+
+    被速率限流的条目不算失败，但也提供不了 IP 证据，故按"信息缺失"处理：
+    仅凭剩余条目判断，避免限流与快轮询互相强化形成自锁。
     """
     ip_by_wid = {}
     for wid, line in results:
         if "IP: " in line:
             ip_by_wid[wid] = line.split("IP: ")[1].split()[0]
 
-    has_failed = any("Connection Failed" in line or "Probe Failed" in line
-                     for _, line in results)
+    has_failed = any(
+        ("Connection Failed" in line or "Probe Failed" in line)
+        and RATE_LIMITED_MARKER not in line
+        for _, line in results
+    )
     if has_failed or not results:
         return False
 
@@ -674,32 +746,41 @@ def evaluate_egress_readiness(workers, results):
     return True
 
 
-def _probe_all_workers(workers):
+def _probe_all_workers(workers, max_concurrency=None):
     """
-    并发探测所有 Worker 出口，返回按 id 升序的 [(wid, line), ...]。
+    探测所有 Worker 出口，返回按 id 升序的 [(wid, line), ...]。
+
+    分批并发而非一次全开：免费 geo-IP 接口按源 IP 限流，
+    Worker 数较多时全量并发会瞬间打满配额，反过来让所有条目都探测失败。
 
     超时线程会被放弃但仍可能继续写入结果字典，故读取前必须在锁内快照，
     否则并发修改会破坏后续排序与遍历。未按时返回的 Worker 显式补占位行，
     避免面板缺行以及 readiness 判定误认为全部成功。
     """
+    if max_concurrency is None:
+        max_concurrency = PROBE_MAX_CONCURRENCY
+    batch_size = max(1, int(max_concurrency))
+
     collected = {}
     res_lock = threading.Lock()
-    threads = []
 
     def _probe_w(w):
         res = probe_single_worker_egress(w)
         with res_lock:
             collected[w["id"]] = res
 
-    for w in workers:
-        t = threading.Thread(target=_probe_w, args=(w,), daemon=True)
-        threads.append(t)
-        t.start()
+    for start in range(0, len(workers), batch_size):
+        batch = workers[start:start + batch_size]
+        threads = []
+        for w in batch:
+            t = threading.Thread(target=_probe_w, args=(w,), daemon=True)
+            threads.append(t)
+            t.start()
 
-    # 单次探测最坏耗时约 2 x PROBE_TIMEOUT (两个 IP 源串行)，留余量后统一回收
-    deadline = time.time() + PROBE_TIMEOUT * 2 + 4
-    for t in threads:
-        t.join(timeout=max(0.1, deadline - time.time()))
+        # 单次探测最坏耗时约 2 x PROBE_TIMEOUT (两个 IP 源串行)，留余量后回收本批
+        deadline = time.time() + PROBE_TIMEOUT * 2 + 4
+        for t in threads:
+            t.join(timeout=max(0.1, deadline - time.time()))
 
     with res_lock:
         snapshot = dict(collected)
@@ -726,8 +807,12 @@ def async_inspect_egress_ips(initial_delay=3.0, poll_interval=300.0,
     首次打印需等待代理链路实际生效 (见 evaluate_egress_readiness)，
     但最长只等 first_print_deadline 秒，超时后无条件打印当前实况，
     避免节点异常时面板永久静默；此后每 poll_interval 周期打印一次。
+
+    Worker 数多时轮询间隔会被限流约束拉长，固定的 deadline 可能只够跑一两轮
+    就宣告超时，故实际截止时间取 first_print_deadline 与
+    「PROBE_MIN_ROUNDS 轮探测所需时长」的较大者。
     """
-    def _probe_round(has_ever_printed, started_at):
+    def _probe_round(has_ever_printed, started_at, deadline_sec):
         """执行一轮探测并按需打印，返回更新后的 has_ever_printed"""
         with LOCK:
             workers_copy = list(WORKERS)
@@ -743,10 +828,10 @@ def async_inspect_egress_ips(initial_delay=3.0, poll_interval=300.0,
             should_print = True
         else:
             # 代理链路迟迟未生效时，超过截止时间也打印一次便于排查
-            should_print = (time.time() - started_at) >= first_print_deadline
+            should_print = (time.time() - started_at) >= deadline_sec
             if should_print:
                 print("[LB] Warning: proxy egress not confirmed within "
-                      f"{int(first_print_deadline)}s. Printing current state as-is.",
+                      f"{int(deadline_sec)}s. Printing current state as-is.",
                       flush=True)
 
         if not should_print:
@@ -766,14 +851,33 @@ def async_inspect_egress_ips(initial_delay=3.0, poll_interval=300.0,
         has_ever_printed = False
         started_at = time.time()
 
+        # 间隔受限流约束被拉长时，固定 deadline 可能只够一两轮就宣告超时，
+        # 故按实际间隔保证至少 PROBE_MIN_ROUNDS 轮的尝试机会。
+        with LOCK:
+            n_workers = len(WORKERS)
+        deadline_sec = min(
+            PROBE_MAX_DEADLINE,
+            max(
+                first_print_deadline,
+                compute_probe_cycle(n_workers) * PROBE_MIN_ROUNDS,
+            ),
+        )
+
         while True:
             try:
-                has_ever_printed = _probe_round(has_ever_printed, started_at)
+                has_ever_printed = _probe_round(has_ever_printed, started_at, deadline_sec)
             except Exception as e:
                 # 守护线程一旦抛出即永久静默，兜底捕获保证下一轮继续
                 print(f"[LB] Egress inspection round failed: {type(e).__name__}: {e}",
                       flush=True)
-            time.sleep(5.0 if not has_ever_printed else poll_interval)
+            if has_ever_printed:
+                time.sleep(poll_interval)
+            else:
+                # 未就绪阶段的间隔按 Worker 数推算：探测请求量 = Worker 数 / 间隔，
+                # 固定间隔在 Worker 较多时仍会超出 geo-IP 接口配额并触发限流。
+                with LOCK:
+                    n_workers = len(WORKERS)
+                time.sleep(compute_probe_interval(n_workers))
 
     t = threading.Thread(target=_worker_task, daemon=True)
     t.start()
