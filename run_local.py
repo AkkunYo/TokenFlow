@@ -21,6 +21,7 @@ import urllib.request
 
 import mihomo_config
 import assign_worker_nodes
+import gen_workers
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKERS_JSON = os.path.join(BASE_DIR, "workers.json")
@@ -42,9 +43,10 @@ def fetch_latest_upstream(target_path, force=False):
         return True
 
     print("[gemflow] Fetching latest `gemini_web2api.py` from upstream repository...")
+    # 镜像加速源优先，与容器构建/启动路径保持一致
     urls = [
-        os.environ.get("UPSTREAM_URL", UPSTREAM_PY_URL),
         os.environ.get("UPSTREAM_MIRROR_URL", UPSTREAM_MIRROR_PY_URL),
+        os.environ.get("UPSTREAM_URL", UPSTREAM_PY_URL),
     ]
 
     for u in urls:
@@ -222,17 +224,15 @@ def main():
 
     # 2. 生成 workers.json
     workers = []
-    for i in range(args.workers):
-        wid = i + 1
-        wport = BASE_WORKER_PORT + wid
-        proxy = None
-        if use_proxies:
-            if i > 0 or is_cn_host:
-                proxy = f"http://127.0.0.1:{BASE_PROXY_PORT + wid}"
-        workers.append({"id": wid, "port": wport, "proxy": proxy})
-
-    with open(WORKERS_JSON, "w", encoding="utf-8") as f:
-        json.dump({"workers": workers}, f, indent=2)
+    # 与容器启动路径共用同一套出口分配语义与写盘逻辑
+    workers = gen_workers.compute_workers(
+        args.workers,
+        use_proxies=use_proxies,
+        is_cn_host=is_cn_host,
+        base_worker_port=BASE_WORKER_PORT,
+        base_proxy_port=BASE_PROXY_PORT,
+    )
+    gen_workers.write_workers_json(workers, WORKERS_JSON)
 
     print(f"[gemflow] Created {WORKERS_JSON} with {len(workers)} worker(s):")
     for w in workers:
@@ -257,23 +257,15 @@ def main():
         print("  Place your `gemini_web2api.py` into this folder to automatically launch workers,")
         print("  or start your upstream servers independently on the ports listed above.")
     else:
+        gen_workers.write_instance_configs(workers, BASE_DIR)
+
         for w in workers:
             wid = w["id"]
             wport = w["port"]
             wdir = os.path.join(BASE_DIR, "instances", f"w{wid}")
-            os.makedirs(wdir, exist_ok=True)
 
-            w_cfg = {
-                "port": wport,
-                "api_keys": [],
-                "cookie": "",
-                "proxy": w["proxy"],
-                "log_requests": False
-            }
-            with open(os.path.join(wdir, "config.json"), "w", encoding="utf-8") as f:
-                json.dump(w_cfg, f, indent=2)
-
-            log_file = open(os.path.join(BASE_DIR, f"worker_{wid}.log"), "w")
+            # 追加写：保留历史崩溃日志便于排查
+            log_file = open(os.path.join(BASE_DIR, f"worker_{wid}.log"), "a")
             p = spawn_tracked([sys.executable, web2api_script, "--port", str(wport), "--config", os.path.join(wdir, "config.json")],
                               cwd=wdir, stdout=log_file, stderr=log_file)
             print(f"[Worker-{wid}] Started PID {p.pid} on port {wport}")

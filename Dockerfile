@@ -23,8 +23,7 @@ RUN ARCH=$(uname -m) && \
 
 # 安装 Python 依赖 (预装 gemflow 及 gemini-web2api 常用依赖)
 COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir curl_cffi websockets certifi
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制项目代码与启动脚本
 COPY . /app/

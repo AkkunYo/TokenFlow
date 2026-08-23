@@ -1,2 +1,5 @@
 httpx>=0.25.0
 pyyaml>=6.0
+curl_cffi
+websockets
+certifi

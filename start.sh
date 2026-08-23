@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # gemflow 统一容器启动入口 (独立版)
+#
+# 本脚本同时被下游 cpa 项目以「保活循环」方式调用，故须遵守以下契约：
+#   1. 文件名与可执行位保持不变 (/app/start.sh)
+#   2. 尊重 PORT 环境变量
+#   3. 不占用 /app/config.yaml (由 cpa 写入自己的配置)
 set -eo pipefail
 
 APP_DIR="${APP_DIR:-/app}"
@@ -16,8 +21,39 @@ UPSTREAM_URL="${UPSTREAM_URL:-https://raw.githubusercontent.com/Sophomoresty/gem
 UPSTREAM_MIRROR_URL="${UPSTREAM_MIRROR_URL:-https://ghfast.top/https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py}"
 WORKERS_JSON="$APP_DIR/workers.json"
 MIHOMO_CONFIG="$APP_DIR/mihomo.yaml"
+MIHOMO_CONTROLLER="${MIHOMO_CONTROLLER:-127.0.0.1:9090}"
 BASE_WORKER_PORT=9000
 BASE_PROXY_PORT=19000
+
+# ---------------------------------------------------------------------------
+# 子进程生命周期管理
+#
+# 本脚本可能被外层保活循环反复调用。若退出时不回收自己拉起的后台进程，
+# 它们会被 init 收养并继续持有 9090 / 19001+ / 9001+ 等端口，
+# 导致下一轮启动全面端口冲突：mihomo 起不来则静默回退直连，
+# Worker 起不来则请求全部 502，且日志中没有明显报错。
+#
+# 因此：入口先清理上一轮残留，退出时通过 trap 主动回收。
+# 保活循环是子 shell，杀它不会连带杀掉其中的 python 孙进程，
+# 故按完整脚本路径 pkill 补杀 —— 路径前缀限定了作用域，
+# 不会误伤同容器内的 cliproxy 等其他进程。
+# ---------------------------------------------------------------------------
+CHILD_PIDS=""
+
+cleanup() {
+    for p in $CHILD_PIDS; do
+        kill "$p" 2>/dev/null || true
+    done
+    pkill -f "$APP_DIR/gemini_web2api.py" 2>/dev/null || true
+    pkill -f "$APP_DIR/lb_gateway.py" 2>/dev/null || true
+    pkill -x mihomo 2>/dev/null || true
+}
+
+trap cleanup EXIT INT TERM
+
+echo "[Init] Reclaiming any leftover processes from a previous run..."
+cleanup
+CHILD_PIDS=""
 
 echo "=================================================="
 echo "          Starting gemflow Gateway Engine        "
@@ -37,10 +73,11 @@ if [ "$AUTO_UPDATE_UPSTREAM" = "true" ] || [ "$AUTO_UPDATE_UPSTREAM" = "1" ]; th
     TMP_SCRIPT="/tmp/gemini_web2api_latest.py"
     DOWNLOADED=false
 
-    # 优先从主源下载，失败则尝试镜像加速源
-    if curl -fsSL --connect-timeout 8 --max-time 20 "$UPSTREAM_URL" -o "$TMP_SCRIPT" && [ -s "$TMP_SCRIPT" ]; then
+    # 镜像加速源优先，与 Dockerfile 构建期顺序保持一致：
+    # 国内网络下可省掉一次主源连接超时的等待
+    if [ -n "$UPSTREAM_MIRROR_URL" ] && curl -fsSL --connect-timeout 8 --max-time 20 "$UPSTREAM_MIRROR_URL" -o "$TMP_SCRIPT" && [ -s "$TMP_SCRIPT" ]; then
         DOWNLOADED=true
-    elif [ -n "$UPSTREAM_MIRROR_URL" ] && curl -fsSL --connect-timeout 8 --max-time 20 "$UPSTREAM_MIRROR_URL" -o "$TMP_SCRIPT" && [ -s "$TMP_SCRIPT" ]; then
+    elif curl -fsSL --connect-timeout 8 --max-time 20 "$UPSTREAM_URL" -o "$TMP_SCRIPT" && [ -s "$TMP_SCRIPT" ]; then
         DOWNLOADED=true
     fi
 
@@ -90,8 +127,8 @@ fi
 if [ -n "$PROVIDER_URLS" ]; then
     echo "[Mihomo] Generating proxy configuration for $WORKER_COUNT workers..."
 
-    # 清除旧 provider 缓存文件，确保每次启动从订阅 URL 拉取最新节点
-    rm -f "$APP_DIR"/sub-*.yaml
+    # 保留既有 sub-*.yaml 订阅缓存：mihomo 拉取成功后会自行覆盖，
+    # 网络不通时这份缓存是唯一的离线兜底，清空会导致节点列表为空。
 
     # 由 mihomo_config.py 统一渲染 Worker 专属策略组 / providers / listeners
     if python3 "$APP_DIR/mihomo_config.py" \
@@ -103,13 +140,27 @@ if [ -n "$PROVIDER_URLS" ]; then
         echo "[Mihomo] Starting mihomo daemon..."
         mihomo -d "$APP_DIR" -f "$MIHOMO_CONFIG" > /tmp/mihomo.log 2>&1 &
         MIHOMO_PID=$!
-        sleep 10
+        CHILD_PIDS="$CHILD_PIDS $MIHOMO_PID"
 
-        if kill -0 "$MIHOMO_PID" 2>/dev/null; then
-            echo "[Mihomo] Started successfully (PID $MIHOMO_PID)."
-            USE_PROXIES=true
+        # 轮询 external-controller 判定就绪：配置正常时秒级通过，
+        # 订阅拉取慢时最多等 30s，进程提前退出则立即放弃。
+        # 固定 sleep 既可能不够（拿到空节点列表）又可能白等。
+        for _ in $(seq 1 30); do
+            if curl -fsS --max-time 1 "http://$MIHOMO_CONTROLLER/version" >/dev/null 2>&1; then
+                USE_PROXIES=true
+                break
+            fi
+            kill -0 "$MIHOMO_PID" 2>/dev/null || break
+            sleep 1
+        done
+
+        if [ "$USE_PROXIES" = "true" ]; then
+            echo "[Mihomo] Started successfully (PID $MIHOMO_PID, controller ready)."
         else
-            echo "[Mihomo] Warning: mihomo failed to start. Falling back to direct native routing."
+            echo "[Mihomo] Warning: not ready. Falling back to direct native routing."
+            echo "[Mihomo] --- last 20 lines of /tmp/mihomo.log ---"
+            tail -20 /tmp/mihomo.log 2>/dev/null || true
+            echo "[Mihomo] --- end of log ---"
         fi
     else
         echo "[Mihomo] Warning: failed to render config. Falling back to direct native routing."
@@ -118,30 +169,18 @@ else
     echo "[Info] Running in DIRECT mode (No subscription provided)."
 fi
 
-# 2. 生成 workers.json
-echo "{\"workers\": [" > "$WORKERS_JSON"
-for ((i=0; i<WORKER_COUNT; i++)); do
-    W_ID=$((i + 1))
-    W_PORT=$((BASE_WORKER_PORT + W_ID))
-
-    if [ "$USE_PROXIES" = "true" ]; then
-        if [ "$i" -eq 0 ] && [ "$IS_CN_HOST" != "true" ]; then
-            PROXY_URL="null"
-        else
-            PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
-            PROXY_URL="\"http://127.0.0.1:$PROXY_PORT\""
-        fi
-    else
-        PROXY_URL="null"
-    fi
-
-    COMMA=","
-    if [ "$i" -eq $((WORKER_COUNT - 1)) ]; then
-        COMMA=""
-    fi
-    echo "  {\"id\": $W_ID, \"port\": $W_PORT, \"proxy\": $PROXY_URL}$COMMA" >> "$WORKERS_JSON"
-done
-echo "]}" >> "$WORKERS_JSON"
+# 2. 生成 workers.json 与各实例 config.json (交由 Python json.dump，避免手工拼接转义出错)
+if ! python3 "$APP_DIR/gen_workers.py" \
+    --workers "$WORKER_COUNT" \
+    --out "$WORKERS_JSON" \
+    --app-dir "$APP_DIR" \
+    --use-proxies "$USE_PROXIES" \
+    --cn-host "$IS_CN_HOST" \
+    --base-worker-port "$BASE_WORKER_PORT" \
+    --base-proxy-port "$BASE_PROXY_PORT"; then
+    echo "[Workers] Fatal: failed to generate worker configuration."
+    exit 1
+fi
 
 # 2.1 为各 Worker 策略组分配互不相同的出口节点
 if [ "$USE_PROXIES" = "true" ]; then
@@ -156,40 +195,36 @@ if [ "$USE_PROXIES" = "true" ]; then
 fi
 
 # 3. 启动所有 gemini_web2api 实例
-for ((i=0; i<WORKER_COUNT; i++)); do
-    W_ID=$((i + 1))
-    W_PORT=$((BASE_WORKER_PORT + W_ID))
+# 出口分配已固化在 workers.json 中，此处直接读取，避免 bash 侧重复推导
+WORKER_LINES=$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+for w in data["workers"]:
+    print(w["id"], w["port"], w.get("proxy") or "DIRECT")
+' "$WORKERS_JSON")
+
+while read -r W_ID W_PORT W_PROXY_DESC; do
+    [ -n "$W_ID" ] || continue
     W_DIR="$APP_DIR/instances/w$W_ID"
-    mkdir -p "$W_DIR"
 
-    # 生成 config.json
-    W_PROXY=""
-    if [ "$USE_PROXIES" = "true" ]; then
-        if [ "$i" -gt 0 ] || [ "$IS_CN_HOST" = "true" ]; then
-            PROXY_PORT=$((BASE_PROXY_PORT + W_ID))
-            W_PROXY="http://127.0.0.1:$PROXY_PORT"
-        fi
-    fi
-
-    cat <<EOF > "$W_DIR/config.json"
-{
-  "port": $W_PORT,
-  "api_keys": [],
-  "cookie": "",
-  "proxy": $([ -n "$W_PROXY" ] && echo "\"$W_PROXY\"" || echo "null"),
-  "log_requests": false
-}
-EOF
-
-    echo "[Worker-$W_ID] Starting gemini_web2api on port $W_PORT (proxy: ${W_PROXY:-DIRECT})..."
+    echo "[Worker-$W_ID] Starting gemini_web2api on port $W_PORT (proxy: $W_PROXY_DESC)..."
     (
         cd "$W_DIR"
+        FAIL=0
         while true; do
-            python3 "$APP_DIR/gemini_web2api.py" --port "$W_PORT" --config "$W_DIR/config.json" > "$APP_DIR/worker_$W_ID.log" 2>&1 || true
-            sleep 1
+            # 追加写而非覆盖：崩溃重启的瞬间清空日志会让根因永久丢失
+            python3 "$APP_DIR/gemini_web2api.py" --port "$W_PORT" \
+                --config "$W_DIR/config.json" >> "$APP_DIR/worker_$W_ID.log" 2>&1 || true
+            FAIL=$((FAIL + 1))
+            # 指数退避封顶 60s：Cookie 失效等持续性故障下避免每秒空转刷盘
+            if [ "$FAIL" -gt 6 ]; then BACKOFF=60; else BACKOFF=$((FAIL * 5)); fi
+            echo "[Worker-$W_ID] exited (#$FAIL), retry in ${BACKOFF}s" | tee -a "$APP_DIR/worker_$W_ID.log"
+            sleep "$BACKOFF"
         done
     ) &
-done
+    CHILD_PIDS="$CHILD_PIDS $!"
+done <<< "$WORKER_LINES"
 
 # 4. 启动轻量负载网关 lb_gateway.py
 echo "[LB] Starting gemflow Load Balancer Gateway on port $PORT..."
@@ -198,4 +233,21 @@ if [ "$DEBUG" = "true" ] || [ "$DEBUG" = "1" ]; then
     EXTRA_ARGS="--debug"
 fi
 
-python3 "$APP_DIR/lb_gateway.py" --port "$PORT" --config "$WORKERS_JSON" $EXTRA_ARGS
+# 网关同样进入保活循环并置于后台，脚本末尾以 wait 挂起。
+# 若让网关作为前台阻塞进程，它一旦退出整个 start.sh 就退出，
+# 外层保活循环重新执行时会与尚未回收的 mihomo / Worker 抢端口。
+(
+    FAIL=0
+    while true; do
+        python3 "$APP_DIR/lb_gateway.py" --port "$PORT" --config "$WORKERS_JSON" $EXTRA_ARGS || true
+        FAIL=$((FAIL + 1))
+        if [ "$FAIL" -gt 6 ]; then BACKOFF=60; else BACKOFF=$((FAIL * 5)); fi
+        echo "[LB] Gateway exited (#$FAIL), retry in ${BACKOFF}s"
+        sleep "$BACKOFF"
+    done
+) &
+CHILD_PIDS="$CHILD_PIDS $!"
+
+# 挂起等待所有保活循环。单个组件崩溃由各自循环内部重启，
+# 不再连带整个脚本退出，从根上避免「重启 -> 端口冲突」循环。
+wait || true
