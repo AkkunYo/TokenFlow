@@ -12,11 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 下载并安装 Mihomo (Clash Meta) 二进制
+# v1.19.30 起内置 OpenVPN 出站支持 (v1.19.22 及以前不含该协议)
+ARG MIHOMO_VERSION=1.19.30
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "x86_64" ]; then MIHOMO_ARCH="amd64-compatible"; \
     elif [ "$ARCH" = "aarch64" ]; then MIHOMO_ARCH="arm64"; \
     else MIHOMO_ARCH="amd64"; fi && \
-    curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.22/mihomo-linux-${MIHOMO_ARCH}-v1.19.22.gz" -o mihomo.gz && \
+    curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-${MIHOMO_ARCH}-v${MIHOMO_VERSION}.gz" -o mihomo.gz && \
     gzip -d mihomo.gz && \
     mv mihomo /usr/local/bin/mihomo && \
     chmod +x /usr/local/bin/mihomo
