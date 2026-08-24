@@ -1,0 +1,103 @@
+name: Build and Publish Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 获取版本号与构建时间
+        run: |
+          TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [ -z "$TAG" ]; then
+            BUILD_NUM=$(git rev-list --count HEAD)
+            MAJOR=$((BUILD_NUM / 100 + 1))
+            MINOR=$(((BUILD_NUM % 100) / 10))
+            PATCH=$((BUILD_NUM % 10))
+            TAG="v$MAJOR.$MINOR.$PATCH"
+          fi
+
+          BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          echo "VERSION=$TAG" >> $GITHUB_ENV
+          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
+          echo "$TAG" > VERSION
+          echo "最终版本: $TAG"
+          echo "构建时间: $BUILD_TIME"
+
+      - name: 运行单元测试
+        run: |
+          python3 -m unittest discover -s tests -p "test_*.py"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录阿里云镜像仓库
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hangzhou.aliyuncs.com
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            BUILD_VERSION=${{ env.VERSION }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
+          tags: |
+            registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest
+            registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: 打印可用镜像地址
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "=================================================="
+          echo "🎉 Docker 镜像构建并推送成功！"
+          echo "--------------------------------------------------"
+          echo "可直接拉取使用的镜像地址："
+          echo "  - registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest"
+          echo "  - registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}"
+          echo ""
+          echo "拉取命令示例："
+          echo "  docker pull registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest"
+          echo "  docker pull registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}"
+          echo "=================================================="
+
+          echo "### 🚀 Docker 镜像构建并推送成功" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest**: \`registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versioned**: \`registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

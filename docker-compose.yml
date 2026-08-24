@@ -1,0 +1,22 @@
+services:
+  tokenflow:
+    image: registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest
+    container_name: tokenflow
+    restart: unless-stopped
+    ports:
+      - "18317:18317"   # CLIProxyAPI 聚合主入口
+      - "8081:8081"     # gemflow 多出口粘滞网关
+      - "4646:4646"     # cursor-agent-api 代理
+      - "9090:9090"     # Mihomo REST API 与 Zashboard Web 面板 (http://<ip>:9090/ui)
+    environment:
+      # CPA 配置内容 (或通过卷挂载 /app/config.yaml)
+      - CPA_CONFIG=${CPA_CONFIG:-}
+      # gemflow 实例数与订阅
+      - WORKER_COUNT=4
+      - PROVIDER_URLS=${PROVIDER_URLS:-}
+      - DEBUG=false
+      # Cursor 配置 (可选)
+      - CURSOR_API_KEY=${CURSOR_API_KEY:-}
+    volumes:
+      - ./auth-dir:/home/user/app/auth-dir
+      - ./config.yaml:/app/config.yaml:ro

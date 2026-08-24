@@ -1,0 +1,85 @@
+# ==============================================================================
+#                      TokenFlow 统一网关核心配置文件 (YAML)
+# ==============================================================================
+# 主网关监听端口 (CLIProxyAPI)
+port: 18317
+
+# OAuth / 账号认证凭据存储目录
+auth-dir: /home/user/app/auth-dir
+
+# 请求重试次数
+request-retry: 2
+
+# 额度与配额策略
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
+  antigravity-credits: true
+
+# 访问 TokenFlow 主网关的 API Key 列表
+api-keys:
+  - sk-tokenflow-master-key
+
+# 远程管理面板配置 (可选)
+remote-management:
+  allow-remote: false
+  secret-key: $2a$10$YourBcryptHashedPasswordHere
+  disable-control-panel: false
+  disable-auto-update-panel: false
+  panel-github-repository: https://github.com/seakee/CPA-Manager-Plus
+
+# 调试与日志
+debug: false
+request-log: true
+logging-to-file: false
+logs-max-total-size-mb: 10
+usage-statistics-enabled: true
+
+# 插件配置
+plugins:
+  enabled: true
+  configs: {}
+
+# ==============================================================================
+#                        OpenAI 兼容上游服务路由配置
+# ==============================================================================
+openai-compatibility:
+  # 1. 内置 gemflow 多实例多出口粘滞网关 (Google Gemini Web2API)
+  - name: gemflow
+    priority: 1
+    base-url: http://127.0.0.1:8081/v1
+    api-key-entries:
+      - api-key: sk-gemflow-internal
+    models:
+      - name: gemini-3.7-flash
+        alias: ""
+      - name: gemini-3.5-flash
+        alias: ""
+      - name: gemini-3.5-flash-thinking
+        alias: ""
+      - name: gemini-3-pro
+        alias: ""
+      - name: gemini-2.5-flash
+        alias: ""
+      - name: gemini-2.5-pro
+        alias: ""
+
+  # 2. 内置 cursor-agent-api-proxy (Cursor CLI API Proxy)
+  - name: cursor
+    priority: 2
+    base-url: http://127.0.0.1:4646/v1
+    api-key-entries:
+      - api-key: not-needed
+    models:
+      - name: auto
+        alias: "cursor/auto"
+      - name: gpt-5.2
+        alias: "cursor/gpt-5.2"
+      - name: gpt-5.3-codex
+        alias: "cursor/gpt-5.3-codex"
+      - name: opus-4.6-thinking
+        alias: "cursor/opus-4.6-thinking"
+      - name: sonnet-4.5-thinking
+        alias: "cursor/sonnet-4.5-thinking"
+      - name: gemini-3-pro
+        alias: "cursor/gemini-3-pro"
