@@ -14,6 +14,10 @@ services:
       # gemflow 实例数与订阅
       - WORKER_COUNT=4
       - PROVIDER_URLS=${PROVIDER_URLS:-}
+      # NVIDIA OpenAI-compatible keys 轮询复用 19001..19004 SOCKS5 出口
+      - ENABLE_NVIDIA_PROXY=true
+      - NVIDIA_PROVIDER_NAMES=${NVIDIA_PROVIDER_NAMES:-nvidia}
+      - NVIDIA_PROXY_OVERRIDE=${NVIDIA_PROXY_OVERRIDE:-false}
       - DEBUG=false
       # Cursor 配置 (可选)
       - CURSOR_API_KEY=${CURSOR_API_KEY:-}

@@ -8,22 +8,32 @@ APP_DIR="${APP_DIR:-/app}"
 cd "$APP_DIR"
 
 CPA_CONFIG_FILE="${CPA_CONFIG_FILE:-$APP_DIR/config.yaml}"
+CPA_RUNTIME_CONFIG_FILE="${CPA_RUNTIME_CONFIG_FILE:-$APP_DIR/tmp/cpa-config.runtime.yaml}"
+CPA_EFFECTIVE_CONFIG_FILE="$CPA_CONFIG_FILE"
 ENABLE_GEMFLOW="${ENABLE_GEMFLOW:-true}"
 ENABLE_CURSOR="${ENABLE_CURSOR:-true}"
 ENABLE_CPA="${ENABLE_CPA:-true}"
 ENABLE_VPNGATE="${ENABLE_VPNGATE:-true}"
 ENABLE_ZASHBOARD="${ENABLE_ZASHBOARD:-true}"
+ENABLE_NVIDIA_PROXY="${ENABLE_NVIDIA_PROXY:-true}"
 
 CPA_PORT="${CPA_PORT:-18317}"
 GEMFLOW_PORT="${PORT:-8081}"
 CURSOR_PORT="${CURSOR_PORT:-4646}"
 MIHOMO_CONTROLLER_PORT="${MIHOMO_CONTROLLER_PORT:-9090}"
 MIHOMO_SECRET="${MIHOMO_SECRET:-}"
+WORKER_COUNT="${WORKER_COUNT:-1}"
 
 # 专用代理端口划分
 # 19001..19000+N 供 gemflow Workers 独享
-# 19081 供 Cursor Agent 专用出口 (CPA 为聚合网关直连本地后端，无需走代理)
+# NVIDIA API keys 轮询复用上述 Mihomo listeners，但在 CPA 内使用 socks5://
+# 19081 供 Cursor Agent 专用出口
 CURSOR_PROXY_PORT="${CURSOR_PROXY_PORT:-19081}"
+NVIDIA_PROXY_HOST="${NVIDIA_PROXY_HOST:-127.0.0.1}"
+NVIDIA_PROXY_BASE_PORT="${NVIDIA_PROXY_BASE_PORT:-19000}"
+NVIDIA_PROXY_PORT_COUNT="${NVIDIA_PROXY_PORT_COUNT:-$WORKER_COUNT}"
+NVIDIA_PROVIDER_NAMES="${NVIDIA_PROVIDER_NAMES:-nvidia}"
+NVIDIA_PROXY_OVERRIDE="${NVIDIA_PROXY_OVERRIDE:-false}"
 
 CHILD_PIDS=""
 
@@ -48,6 +58,7 @@ echo "          Starting TokenFlow Engine               "
 echo "=================================================="
 echo "-> Main Gateway Port (CPA) : $CPA_PORT (Aggregator Direct)"
 echo "-> Gemflow Gateway Port    : $GEMFLOW_PORT (Dedicated Multi-Egress: 19001..)"
+echo "-> NVIDIA CPA Keys         : SOCKS5 Round-Robin (${NVIDIA_PROXY_PORT_COUNT} Egress Port(s))"
 echo "-> Cursor Proxy Port       : $CURSOR_PORT (Dedicated Egress: 127.0.0.1:$CURSOR_PROXY_PORT)"
 echo "-> Mihomo Web UI (Zashboard): 0.0.0.0:$MIHOMO_CONTROLLER_PORT/ui"
 echo "=================================================="
@@ -124,6 +135,58 @@ if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
     fi
 fi
 
+# 1.1 为 CPA 内 NVIDIA API keys 生成逐 key SOCKS5 运行时配置
+# 原始 config.yaml 可能由只读卷挂载，始终写入独立的 mode-0600 派生文件。
+if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
+    if [ "$ENABLE_NVIDIA_PROXY" = "true" ] || [ "$ENABLE_NVIDIA_PROXY" = "1" ]; then
+        if [ -z "${PROVIDER_URLS:-}" ]; then
+            echo "[NVIDIA Proxy] Warning: no Mihomo provider source is available; proxied NVIDIA requests will fail closed."
+        fi
+        if [ ! -f "$APP_DIR/cpa_proxy_config.py" ]; then
+            echo "[NVIDIA Proxy] Fatal: $APP_DIR/cpa_proxy_config.py not found."
+            exit 1
+        else
+            case "$WORKER_COUNT" in
+                ''|*[!0-9]*)
+                    echo "[NVIDIA Proxy] Fatal: WORKER_COUNT must be a positive integer."
+                    exit 1
+                    ;;
+            esac
+            case "$NVIDIA_PROXY_PORT_COUNT" in
+                ''|*[!0-9]*)
+                    echo "[NVIDIA Proxy] Fatal: NVIDIA_PROXY_PORT_COUNT must be a positive integer."
+                    exit 1
+                    ;;
+            esac
+            if [ "$NVIDIA_PROXY_PORT_COUNT" -le 0 ] || [ "$NVIDIA_PROXY_PORT_COUNT" -gt "$WORKER_COUNT" ]; then
+                echo "[NVIDIA Proxy] Fatal: proxy port count must be between 1 and WORKER_COUNT ($WORKER_COUNT)."
+                exit 1
+            fi
+
+            NVIDIA_PROXY_ARGS=()
+            case "$NVIDIA_PROXY_OVERRIDE" in
+                true|TRUE|1|yes|YES|on|ON)
+                    NVIDIA_PROXY_ARGS+=(--override-existing)
+                    ;;
+            esac
+
+            if python3 "$APP_DIR/cpa_proxy_config.py" \
+                --input "$CPA_CONFIG_FILE" \
+                --output "$CPA_RUNTIME_CONFIG_FILE" \
+                --proxy-host "$NVIDIA_PROXY_HOST" \
+                --proxy-base-port "$NVIDIA_PROXY_BASE_PORT" \
+                --proxy-count "$NVIDIA_PROXY_PORT_COUNT" \
+                --provider-names "$NVIDIA_PROVIDER_NAMES" \
+                "${NVIDIA_PROXY_ARGS[@]}"; then
+                CPA_EFFECTIVE_CONFIG_FILE="$CPA_RUNTIME_CONFIG_FILE"
+            else
+                echo "[NVIDIA Proxy] Fatal: refusing to start CPA with an incomplete proxy configuration."
+                exit 1
+            fi
+        fi
+    fi
+fi
+
 # 2. 启动 gemflow 多出口粘滞网关引擎 (Port 8081)
 if [ "$ENABLE_GEMFLOW" = "true" ] || [ "$ENABLE_GEMFLOW" = "1" ]; then
     echo "[Gemflow] Launching gemflow engine on port $GEMFLOW_PORT..."
@@ -132,9 +195,9 @@ if [ "$ENABLE_GEMFLOW" = "true" ] || [ "$ENABLE_GEMFLOW" = "1" ]; then
         FAIL=0
         while true; do
             if [ -f "$APP_DIR/run_local.py" ]; then
-                python3 "$APP_DIR/run_local.py" --workers "${WORKER_COUNT:-1}" --port "$GEMFLOW_PORT" ${PROVIDER_URLS:+--sub "$PROVIDER_URLS"} ${DEBUG:+--debug} || true
+                python3 "$APP_DIR/run_local.py" --workers "$WORKER_COUNT" --port "$GEMFLOW_PORT" ${PROVIDER_URLS:+--sub "$PROVIDER_URLS"} ${DEBUG:+--debug} || true
             elif [ -f "$APP_DIR/lb_gateway.py" ] && [ -f "$APP_DIR/gen_workers.py" ]; then
-                python3 "$APP_DIR/gen_workers.py" --workers "${WORKER_COUNT:-1}" --out "$APP_DIR/workers.json" --app-dir "$APP_DIR" || true
+                python3 "$APP_DIR/gen_workers.py" --workers "$WORKER_COUNT" --out "$APP_DIR/workers.json" --app-dir "$APP_DIR" || true
                 python3 "$APP_DIR/lb_gateway.py" --port "$GEMFLOW_PORT" --config "$APP_DIR/workers.json" || true
             else
                 echo "[Gemflow] Notice: gemflow modules not detected in $APP_DIR. Skipping."
@@ -178,9 +241,10 @@ if [ "$ENABLE_CURSOR" = "true" ] || [ "$ENABLE_CURSOR" = "1" ]; then
     CHILD_PIDS="$CHILD_PIDS $!"
 fi
 
-# 4. 启动主入口 CLIProxyAPI 网关 (Port 18317，聚合中心直连各后端，不经由代理)
+# 4. 启动主入口 CLIProxyAPI 网关
+# 聚合网关本身不继承全局代理；NVIDIA 凭据通过配置内逐 key proxy-url 出站。
 if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
-    echo "[CPA] Starting CLIProxyAPI frontend aggregator on port $CPA_PORT (Direct Connection)..."
+    echo "[CPA] Starting CLIProxyAPI frontend aggregator on port $CPA_PORT..."
     (
         FAIL=0
         while true; do
@@ -188,7 +252,7 @@ if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
 
             if command -v cliproxy >/dev/null 2>&1; then
                 # 注意: Go flag 包在首个位置参数处停止解析，--config 必须置于 run 之前
-                cliproxy --config "$CPA_CONFIG_FILE" run || true
+                cliproxy --config "$CPA_EFFECTIVE_CONFIG_FILE" run || true
             else
                 echo "[CPA] Fatal: cliproxy binary not found in PATH."
                 break

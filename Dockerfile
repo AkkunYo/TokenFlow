@@ -114,7 +114,7 @@ RUN if ! id -u user >/dev/null 2>&1; then useradd -m -u 1000 user; fi && \
 
 # 9. 复制所有本地源码与配置文件
 COPY --chown=user:user . /app/
-RUN chmod +x /app/start.sh /app/vpngate_provider.py /app/run_local.py 2>/dev/null || true
+RUN chmod +x /app/start.sh /app/vpngate_provider.py /app/run_local.py /app/cpa_proxy_config.py 2>/dev/null || true
 
 USER user
 

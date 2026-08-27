@@ -137,7 +137,7 @@ EOF
 pip3 install --no-cache-dir -r "$INSTALL_DIR/requirements.txt" || pip install --break-system-packages -r "$INSTALL_DIR/requirements.txt" || true
 
 # 9. 部署源码、配置文件、转换模块与管理工具
-for pyfile in lb_gateway.py gen_workers.py assign_worker_nodes.py mihomo_config.py run_local.py vpngate_provider.py; do
+for pyfile in lb_gateway.py gen_workers.py assign_worker_nodes.py mihomo_config.py run_local.py vpngate_provider.py cpa_proxy_config.py; do
     if [ -f "./$pyfile" ]; then
         cp "./$pyfile" "$INSTALL_DIR/$pyfile"
         chmod +x "$INSTALL_DIR/$pyfile"

@@ -1,9 +1,12 @@
 import copy
+import io
 import os
 import stat
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 import yaml
 
@@ -52,6 +55,21 @@ class TestAssignNvidiaSocksProxies(unittest.TestCase):
         self.assertEqual(stats["eligible_keys"], 3)
         self.assertEqual(stats["assigned_keys"], 3)
         self.assertEqual(stats["preserved_keys"], 0)
+
+    def test_scales_round_robin_assignment_to_hundreds_of_keys(self):
+        entries = [{"api-key": f"nvapi-test-{index}"} for index in range(855)]
+        source = _config(_provider(entries=entries))
+        proxy_urls = cpa_proxy_config.build_proxy_urls("127.0.0.1", 19000, 4)
+
+        rendered, stats = cpa_proxy_config.assign_nvidia_socks_proxies(
+            source,
+            proxy_urls,
+        )
+
+        assigned = rendered["openai-compatibility"][0]["api-key-entries"]
+        self.assertEqual(stats["assigned_keys"], 855)
+        self.assertEqual(assigned[0]["proxy-url"], proxy_urls[0])
+        self.assertEqual(assigned[854]["proxy-url"], proxy_urls[2])
 
     def test_detects_nvidia_from_base_url_when_name_is_custom(self):
         source = _config(_provider(
@@ -136,6 +154,51 @@ class TestAssignNvidiaSocksProxies(unittest.TestCase):
                 [],
             )
 
+    def test_rejects_invalid_config_shapes_and_proxy_urls(self):
+        with self.assertRaises(ValueError):
+            cpa_proxy_config.assign_nvidia_socks_proxies(
+                [], ["socks5://127.0.0.1:19001"]
+            )
+        with self.assertRaises(ValueError):
+            cpa_proxy_config.assign_nvidia_socks_proxies(
+                {"openai-compatibility": {}},
+                ["socks5://127.0.0.1:19001"],
+            )
+        with self.assertRaises(ValueError):
+            cpa_proxy_config.assign_nvidia_socks_proxies(
+                _config(_provider(entries=[{"api-key": "nvapi-1"}])),
+                ["http://127.0.0.1:19001"],
+            )
+        with self.assertRaises(ValueError):
+            cpa_proxy_config.assign_nvidia_socks_proxies(
+                _config(_provider(entries="not-a-list")),
+                ["socks5://127.0.0.1:19001"],
+            )
+
+    def test_handles_empty_and_malformed_provider_entries(self):
+        source = {
+            "openai-compatibility": [
+                None,
+                _provider(entries=None),
+                _provider(entries=[
+                    "not-a-mapping",
+                    {},
+                    {"api-key": "  "},
+                    {"api-key": "nvapi-valid"},
+                ]),
+            ]
+        }
+
+        rendered, stats = cpa_proxy_config.assign_nvidia_socks_proxies(
+            source,
+            ["socks5://127.0.0.1:19001"],
+        )
+
+        entries = rendered["openai-compatibility"][2]["api-key-entries"]
+        self.assertEqual(entries[-1]["proxy-url"], "socks5://127.0.0.1:19001")
+        self.assertEqual(stats["matched_providers"], 2)
+        self.assertEqual(stats["eligible_keys"], 1)
+
 
 class TestRuntimeConfig(unittest.TestCase):
     def test_build_proxy_urls_validates_and_builds_socks_pool(self):
@@ -149,6 +212,15 @@ class TestRuntimeConfig(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             cpa_proxy_config.build_proxy_urls("127.0.0.1", 19000, 0)
+
+    def test_build_proxy_urls_rejects_invalid_host_and_port_ranges(self):
+        for host in ("", "bad host", "http://127.0.0.1", "host/path"):
+            with self.assertRaises(ValueError):
+                cpa_proxy_config.build_proxy_urls(host, 19000, 1)
+        with self.assertRaises(ValueError):
+            cpa_proxy_config.build_proxy_urls("127.0.0.1", "invalid", 1)
+        with self.assertRaises(ValueError):
+            cpa_proxy_config.build_proxy_urls("127.0.0.1", 65535, 1)
 
     def test_writes_private_runtime_copy_without_changing_source(self):
         source_data = _config(_provider(entries=[{"api-key": "nvapi-secret"}]))
@@ -174,6 +246,61 @@ class TestRuntimeConfig(unittest.TestCase):
             self.assertEqual(entry["proxy-url"], "socks5://127.0.0.1:19001")
             self.assertEqual(stat.S_IMODE(os.stat(output_path).st_mode), 0o600)
             self.assertEqual(stats["assigned_keys"], 1)
+
+    def test_rejects_overwriting_source_and_accepts_empty_yaml(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = os.path.join(directory, "config.yaml")
+            output_path = os.path.join(directory, "runtime.yaml")
+            with open(source_path, "w", encoding="utf-8") as handle:
+                handle.write("")
+
+            with self.assertRaises(ValueError):
+                cpa_proxy_config.write_runtime_config(
+                    source_path,
+                    source_path,
+                    ["socks5://127.0.0.1:19001"],
+                )
+
+            stats = cpa_proxy_config.write_runtime_config(
+                source_path,
+                output_path,
+                ["socks5://127.0.0.1:19001"],
+            )
+            self.assertEqual(stats["matched_providers"], 0)
+
+    def test_cli_success_and_failure_do_not_print_api_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = os.path.join(directory, "config.yaml")
+            output_path = os.path.join(directory, "runtime.yaml")
+            secret = "nvapi-secret-value"
+            with open(source_path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump(
+                    _config(_provider(entries=[{"api-key": secret}])),
+                    handle,
+                    sort_keys=False,
+                )
+
+            output = io.StringIO()
+            with mock.patch.object(sys, "argv", [
+                "cpa_proxy_config.py",
+                "--input", source_path,
+                "--output", output_path,
+                "--proxy-count", "2",
+                "--provider-names", "nvidia,custom-nvidia",
+            ]), redirect_stdout(output):
+                self.assertEqual(cpa_proxy_config.main(), 0)
+            self.assertIn("1 assigned key(s)", output.getvalue())
+            self.assertNotIn(secret, output.getvalue())
+
+            output = io.StringIO()
+            with mock.patch.object(sys, "argv", [
+                "cpa_proxy_config.py",
+                "--input", source_path,
+                "--output", output_path,
+                "--proxy-count", "0",
+            ]), redirect_stdout(output):
+                self.assertEqual(cpa_proxy_config.main(), 1)
+            self.assertIn("Failed to prepare runtime config", output.getvalue())
 
 
 class TestStartupIntegration(unittest.TestCase):

@@ -64,7 +64,20 @@ openai-compatibility:
       - name: gemini-2.5-pro
         alias: ""
 
-  # 2. 内置 cursor-agent-api-proxy (Cursor CLI API Proxy)
+  # 2. NVIDIA OpenAI-compatible provider（示例，按需取消注释）
+  # TokenFlow 会在运行时副本中，为每个 key 轮询注入：
+  # proxy-url: socks5://127.0.0.1:19001..19000+WORKER_COUNT
+  # - name: nvidia
+  #   priority: 2
+  #   base-url: https://integrate.api.nvidia.com/v1
+  #   api-key-entries:
+  #     - api-key: nvapi-your-first-key
+  #     - api-key: nvapi-your-second-key
+  #   models:
+  #     - name: meta/llama-3.1-70b-instruct
+  #       alias: ""
+
+  # 3. 内置 cursor-agent-api-proxy (Cursor CLI API Proxy)
   - name: cursor
     priority: 2
     base-url: http://127.0.0.1:4646/v1
