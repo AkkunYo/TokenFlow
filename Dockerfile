@@ -31,16 +31,15 @@ RUN ARCH=$(uname -m) && \
     chmod +x /usr/local/bin/mihomo
 
 # 3. 安装 Cursor CLI (提供 agent / cursor-agent 指令，移至全局 PATH)
-RUN curl https://cursor.com/install -fsS | bash || true && \
-    mkdir -p /usr/local/bin && \
-    if [ -f /root/.local/bin/agent ]; then \
-        mv /root/.local/bin/agent /usr/local/bin/agent && \
-        chmod 755 /usr/local/bin/agent; \
-    fi && \
-    if [ -f /root/.local/bin/cursor-agent ]; then \
-        mv /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent && \
-        chmod 755 /usr/local/bin/cursor-agent; \
-    fi
+RUN curl https://cursor.com/install -fsS | bash && \
+    CURSOR_AGENT_DIR="$(dirname "$(readlink -f /root/.local/bin/agent)")" && \
+    test -x "$CURSOR_AGENT_DIR/cursor-agent" && \
+    test -x "$CURSOR_AGENT_DIR/node" && \
+    cp -a "$CURSOR_AGENT_DIR" /opt/cursor-agent && \
+    chmod -R a+rX /opt/cursor-agent && \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent && \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent && \
+    rm -rf /root/.local/share/cursor-agent /root/.local/bin/agent /root/.local/bin/cursor-agent
 
 # 4. 下载并安装最新版 CLIProxyAPI (支持 amd64 与 arm64 架构自适应)
 RUN python3 - <<'EOF'

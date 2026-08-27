@@ -4,6 +4,13 @@
 # ==============================================================================
 set -eo pipefail
 
+is_true() {
+    case "${1:-}" in
+        true|TRUE|True|1|yes|YES|Yes|on|ON|On) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 APP_DIR="${APP_DIR:-/app}"
 cd "$APP_DIR"
 
@@ -23,16 +30,31 @@ CURSOR_PORT="${CURSOR_PORT:-4646}"
 MIHOMO_CONTROLLER_PORT="${MIHOMO_CONTROLLER_PORT:-9090}"
 MIHOMO_SECRET="${MIHOMO_SECRET:-}"
 WORKER_COUNT="${WORKER_COUNT:-1}"
+DEBUG="${DEBUG:-false}"
 
 # 专用代理端口划分
 # 19001..19000+N 供 gemflow Workers 独享
 # NVIDIA API keys 轮询复用上述 Mihomo listeners，但在 CPA 内使用 socks5://
-# 19081 供 Cursor Agent 专用出口
-CURSOR_PROXY_PORT="${CURSOR_PROXY_PORT:-19081}"
 NVIDIA_PROXY_HOST="${NVIDIA_PROXY_HOST:-127.0.0.1}"
 NVIDIA_PROXY_BASE_PORT="${NVIDIA_PROXY_BASE_PORT:-19000}"
 NVIDIA_PROXY_PORT_COUNT="${NVIDIA_PROXY_PORT_COUNT:-$WORKER_COUNT}"
 NVIDIA_PROVIDER_NAMES="${NVIDIA_PROVIDER_NAMES:-nvidia}"
+
+case "$WORKER_COUNT" in
+    ''|*[!0-9]*|0)
+        echo "[Config] Fatal: WORKER_COUNT must be a positive integer."
+        exit 1
+        ;;
+esac
+case "$NVIDIA_PROXY_BASE_PORT" in
+    ''|*[!0-9]*)
+        echo "[Config] Fatal: NVIDIA_PROXY_BASE_PORT must be a non-negative integer."
+        exit 1
+        ;;
+esac
+
+# Cursor 默认复用最后一个已存在的 Worker listener，避免引用未生成端口。
+CURSOR_PROXY_PORT="${CURSOR_PROXY_PORT:-$((NVIDIA_PROXY_BASE_PORT + WORKER_COUNT))}"
 
 CHILD_PIDS=""
 
@@ -58,7 +80,7 @@ echo "=================================================="
 echo "-> Main Gateway Port (CPA) : $CPA_PORT (Aggregator Direct)"
 echo "-> Gemflow Gateway Port    : $GEMFLOW_PORT (Dedicated Multi-Egress: 19001..)"
 echo "-> NVIDIA CPA Keys         : SOCKS5 Round-Robin (${NVIDIA_PROXY_PORT_COUNT} Egress Port(s))"
-echo "-> Cursor Proxy Port       : $CURSOR_PORT (Dedicated Egress: 127.0.0.1:$CURSOR_PROXY_PORT)"
+echo "-> Cursor Proxy Port       : $CURSOR_PORT (Shared Egress: 127.0.0.1:$CURSOR_PROXY_PORT)"
 echo "-> Mihomo Web UI (Zashboard): 0.0.0.0:$MIHOMO_CONTROLLER_PORT/ui"
 echo "=================================================="
 
@@ -145,12 +167,6 @@ if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
             echo "[NVIDIA Proxy] Fatal: $APP_DIR/cpa_proxy_config.py not found."
             exit 1
         else
-            case "$WORKER_COUNT" in
-                ''|*[!0-9]*)
-                    echo "[NVIDIA Proxy] Fatal: WORKER_COUNT must be a positive integer."
-                    exit 1
-                    ;;
-            esac
             case "$NVIDIA_PROXY_PORT_COUNT" in
                 ''|*[!0-9]*)
                     echo "[NVIDIA Proxy] Fatal: NVIDIA_PROXY_PORT_COUNT must be a positive integer."
@@ -186,7 +202,11 @@ if [ "$ENABLE_GEMFLOW" = "true" ] || [ "$ENABLE_GEMFLOW" = "1" ]; then
         FAIL=0
         while true; do
             if [ -f "$APP_DIR/run_local.py" ]; then
-                python3 "$APP_DIR/run_local.py" --workers "$WORKER_COUNT" --port "$GEMFLOW_PORT" ${PROVIDER_URLS:+--sub "$PROVIDER_URLS"} ${DEBUG:+--debug} || true
+                GEMFLOW_ARGS=(--workers "$WORKER_COUNT" --port "$GEMFLOW_PORT")
+                if is_true "$DEBUG"; then
+                    GEMFLOW_ARGS+=(--debug)
+                fi
+                python3 "$APP_DIR/run_local.py" "${GEMFLOW_ARGS[@]}" || true
             elif [ -f "$APP_DIR/lb_gateway.py" ] && [ -f "$APP_DIR/gen_workers.py" ]; then
                 python3 "$APP_DIR/gen_workers.py" --workers "$WORKER_COUNT" --out "$APP_DIR/workers.json" --app-dir "$APP_DIR" || true
                 python3 "$APP_DIR/lb_gateway.py" --port "$GEMFLOW_PORT" --config "$APP_DIR/workers.json" || true
@@ -203,7 +223,7 @@ if [ "$ENABLE_GEMFLOW" = "true" ] || [ "$ENABLE_GEMFLOW" = "1" ]; then
     CHILD_PIDS="$CHILD_PIDS $!"
 fi
 
-# 3. 启动 Cursor CLI API Proxy 引擎 (Port 4646，走专用代理端口 19081)
+# 3. 启动 Cursor CLI API Proxy 引擎 (Port 4646，复用现有 Mihomo listener)
 if [ "$ENABLE_CURSOR" = "true" ] || [ "$ENABLE_CURSOR" = "1" ]; then
     echo "[Cursor] Launching cursor-agent-api on port $CURSOR_PORT (Proxy: http://127.0.0.1:$CURSOR_PROXY_PORT)..."
     (
