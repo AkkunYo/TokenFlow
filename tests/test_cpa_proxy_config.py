@@ -323,6 +323,8 @@ class TestStartupIntegration(unittest.TestCase):
             startup = handle.read()
         with open(os.path.join(project_dir, "install.sh"), encoding="utf-8") as handle:
             installer = handle.read()
+        with open(os.path.join(project_dir, "Dockerfile"), encoding="utf-8") as handle:
+            dockerfile = handle.read()
         with open(os.path.join(project_dir, "docker-compose.yml"),
                   encoding="utf-8") as handle:
             compose = handle.read()
@@ -337,6 +339,21 @@ class TestStartupIntegration(unittest.TestCase):
         self.assertNotIn("NVIDIA_PROXY_OVERRIDE", startup)
         self.assertNotIn("--override-existing", startup)
         self.assertNotIn("NVIDIA_PROXY_OVERRIDE", compose)
+        self.assertNotIn('${PROVIDER_URLS:+--sub "$PROVIDER_URLS"}', startup)
+        self.assertNotIn('${DEBUG:+--debug}', startup)
+        self.assertIn('if is_true "$DEBUG"; then', startup)
+        self.assertIn(
+            'CURSOR_PROXY_PORT="${CURSOR_PROXY_PORT:-$((NVIDIA_PROXY_BASE_PORT + WORKER_COUNT))}"',
+            startup,
+        )
+        self.assertIn(
+            'install -m 0755 "$(readlink -f /root/.local/bin/agent)" /usr/local/bin/agent',
+            dockerfile,
+        )
+        self.assertNotIn(
+            "curl https://cursor.com/install -fsS | bash || true",
+            dockerfile,
+        )
 
     def test_ci_installs_dependencies_and_docker_context_excludes_secrets(self):
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
