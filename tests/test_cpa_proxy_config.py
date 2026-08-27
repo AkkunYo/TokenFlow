@@ -338,6 +338,36 @@ class TestStartupIntegration(unittest.TestCase):
         self.assertNotIn("--override-existing", startup)
         self.assertNotIn("NVIDIA_PROXY_OVERRIDE", compose)
 
+    def test_ci_installs_dependencies_and_docker_context_excludes_secrets(self):
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        workflow_path = os.path.join(
+            project_dir, ".github", "workflows", "docker-image.yml"
+        )
+        dockerignore_path = os.path.join(project_dir, ".dockerignore")
+
+        with open(workflow_path, encoding="utf-8") as handle:
+            workflow = handle.read()
+
+        self.assertIn("actions/setup-python@v5", workflow)
+        self.assertIn(
+            "pip install --disable-pip-version-check -r requirements.txt coverage",
+            workflow,
+        )
+        self.assertIn(
+            "coverage report --include=cpa_proxy_config.py --fail-under=80",
+            workflow,
+        )
+        self.assertIn("bash -n start.sh install.sh", workflow)
+        self.assertIn("docker compose config --quiet", workflow)
+
+        self.assertTrue(os.path.exists(dockerignore_path))
+        dockerignore = ""
+        if os.path.exists(dockerignore_path):
+            with open(dockerignore_path, encoding="utf-8") as handle:
+                dockerignore = handle.read()
+        for ignored in (".git", ".codegraph/", "config.yaml", "auth-dir/"):
+            self.assertIn(ignored, dockerignore)
+
 
 if __name__ == "__main__":
     unittest.main()
