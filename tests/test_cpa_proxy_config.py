@@ -348,7 +348,15 @@ class TestStartupIntegration(unittest.TestCase):
         with open(workflow_path, encoding="utf-8") as handle:
             workflow = handle.read()
 
-        self.assertIn("actions/setup-python@v5", workflow)
+        for action in (
+            "actions/checkout@v7",
+            "actions/setup-python@v7",
+            "docker/setup-qemu-action@v4",
+            "docker/setup-buildx-action@v4",
+            "docker/login-action@v4",
+            "docker/build-push-action@v7",
+        ):
+            self.assertIn(action, workflow)
         self.assertIn(
             "pip install --disable-pip-version-check -r requirements.txt coverage",
             workflow,
