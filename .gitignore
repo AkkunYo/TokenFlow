@@ -1,5 +1,6 @@
 # Git
 .git/
+.codegraph/
 .DS_Store
 *.log
 *.pid
