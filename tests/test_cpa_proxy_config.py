@@ -347,7 +347,15 @@ class TestStartupIntegration(unittest.TestCase):
             startup,
         )
         self.assertIn(
-            'install -m 0755 "$(readlink -f /root/.local/bin/agent)" /usr/local/bin/agent',
+            'cp -a "$CURSOR_AGENT_DIR" /opt/cursor-agent',
+            dockerfile,
+        )
+        self.assertIn(
+            "ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent",
+            dockerfile,
+        )
+        self.assertNotIn(
+            'install -m 0755 "$(readlink -f /root/.local/bin/agent)"',
             dockerfile,
         )
         self.assertNotIn(
