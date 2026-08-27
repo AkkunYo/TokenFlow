@@ -33,7 +33,6 @@ NVIDIA_PROXY_HOST="${NVIDIA_PROXY_HOST:-127.0.0.1}"
 NVIDIA_PROXY_BASE_PORT="${NVIDIA_PROXY_BASE_PORT:-19000}"
 NVIDIA_PROXY_PORT_COUNT="${NVIDIA_PROXY_PORT_COUNT:-$WORKER_COUNT}"
 NVIDIA_PROVIDER_NAMES="${NVIDIA_PROVIDER_NAMES:-nvidia}"
-NVIDIA_PROXY_OVERRIDE="${NVIDIA_PROXY_OVERRIDE:-false}"
 
 CHILD_PIDS=""
 
@@ -163,21 +162,13 @@ if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
                 exit 1
             fi
 
-            NVIDIA_PROXY_ARGS=()
-            case "$NVIDIA_PROXY_OVERRIDE" in
-                true|TRUE|1|yes|YES|on|ON)
-                    NVIDIA_PROXY_ARGS+=(--override-existing)
-                    ;;
-            esac
-
             if python3 "$APP_DIR/cpa_proxy_config.py" \
                 --input "$CPA_CONFIG_FILE" \
                 --output "$CPA_RUNTIME_CONFIG_FILE" \
                 --proxy-host "$NVIDIA_PROXY_HOST" \
                 --proxy-base-port "$NVIDIA_PROXY_BASE_PORT" \
                 --proxy-count "$NVIDIA_PROXY_PORT_COUNT" \
-                --provider-names "$NVIDIA_PROVIDER_NAMES" \
-                "${NVIDIA_PROXY_ARGS[@]}"; then
+                --provider-names "$NVIDIA_PROVIDER_NAMES"; then
                 CPA_EFFECTIVE_CONFIG_FILE="$CPA_RUNTIME_CONFIG_FILE"
             else
                 echo "[NVIDIA Proxy] Fatal: refusing to start CPA with an incomplete proxy configuration."

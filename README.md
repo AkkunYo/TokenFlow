@@ -25,7 +25,7 @@
 | 🎯 **Unified Entrypoint** | `CLIProxyAPI (Port 18317)` | Single unified OpenAI-compatible endpoint aggregating upstream providers | CLIProxyAPI daemon with automatic restart supervisor |
 | ⚡ **Prompt KV Cache Locality** | `gemflow (Port 8081)` | Sticky session routing via user / MD5 fingerprint cutting TTFT by ~72% | In-memory session affinity + Least-Connection scheduling |
 | 🌐 **Multi-Egress & Web Dashboard** | `Mihomo + Zashboard (:9090/ui)` | Dedicated per-worker proxy listeners (`19001..`) + modern Web UI for node monitoring | Dynamic policy groups + integrated visual dashboard at `:9090/ui` |
-| 🟩 **Per-Key NVIDIA SOCKS Routing** | `CLIProxyAPI + Mihomo` | Round-robins NVIDIA OpenAI-compatible API keys across dedicated SOCKS5 egress listeners | Writes a mode-`0600` runtime config, preserves the read-only source, and keeps explicit `proxy-url` values by default |
+| 🟩 **Per-Key NVIDIA SOCKS Routing** | `CLIProxyAPI + Mihomo` | Round-robins NVIDIA keys missing a proxy across dedicated SOCKS5 egress listeners | Writes a mode-`0600` runtime config, preserves the read-only source, and never replaces an existing `proxy-url` |
 | 💻 **Cursor CLI Bridge** | `cursor-agent-api (Port 4646)` | Converts Cursor Pro/Business subscription into standard OpenAI API format | Headless `agent` process spawning & SSE streaming |
 | 🛡️ **Dual-Mode Self-Healing** | `Systemd (Host) / Shell Loop (Docker)` | Differentiates host OS service supervisor from lightweight container loop | `install.sh` systemd unit vs `start.sh` background PID tracking |
 
@@ -109,9 +109,8 @@ The pool size defaults to `WORKER_COUNT`. Configuration options:
 - `ENABLE_NVIDIA_PROXY=true` enables automatic assignment.
 - `NVIDIA_PROVIDER_NAMES=nvidia` accepts additional comma-separated provider names.
 - `NVIDIA_PROXY_PORT_COUNT` uses the first N Mihomo listeners and cannot exceed `WORKER_COUNT`.
-- `NVIDIA_PROXY_OVERRIDE=false` preserves existing per-key `proxy-url` values; set it to `true` to replace them.
 
-The source `config.yaml` remains unchanged. The derived config is written to `/app/tmp/cpa-config.runtime.yaml` with mode `0600`. If Mihomo has no usable provider source, NVIDIA requests fail closed instead of falling back to a direct connection.
+The source `config.yaml` remains unchanged. Existing non-empty `proxy-url` values are always preserved; only missing or blank values participate in round-robin assignment. The derived config is written to `/app/tmp/cpa-config.runtime.yaml` with mode `0600`. If Mihomo has no usable provider source, NVIDIA requests fail closed instead of falling back to a direct connection.
 
 | Service Module | Port | Protocol / Description |
 | :--- | :--- | :--- |

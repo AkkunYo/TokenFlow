@@ -23,7 +23,7 @@
 | 🎯 **统一入口** | `CLIProxyAPI (Port 18317)` | 单一 OpenAI 兼容入口，多上游自动故障转移与额度路由 | Go 核心常驻进程，支持热重载与 Web 管理面板 |
 | ⚡ **Prompt KV 缓存加速** | `gemflow (Port 8081)` | 提取对话指纹 (`user` + Prompt MD5)，锁定相同实例与出口，降低首字延迟 ~72% | 内存 LRU 会话池 + 最少连接调度 (`Least-Connection`) |
 | 🌐 **多出口分流与 Web 监控** | `Mihomo + Zashboard (Port 9090/ui)` | 为每个 Worker 实例分配独立专属代理端口 (`19001..`)，提供现代 Web 控制面板监控节点状态与切换 | 启动后通过 Controller API 自动绑定健康低延迟节点，支持可视化 Web UI |
-| 🟩 **NVIDIA 逐 Key SOCKS 分流** | `CLIProxyAPI + Mihomo` | NVIDIA OpenAI-compatible provider 的每个 API key 按顺序轮询独立 SOCKS5 出口 | 生成 `0600` 权限运行时配置，不修改只读源文件；已有 `proxy-url` 默认保留 |
+| 🟩 **NVIDIA 逐 Key SOCKS 分流** | `CLIProxyAPI + Mihomo` | NVIDIA OpenAI-compatible provider 的缺失代理 key 按顺序轮询独立 SOCKS5 出口 | 生成 `0600` 权限运行时配置，不修改只读源文件；已有 `proxy-url` 永不覆盖 |
 | 💻 **Cursor 订阅转换** | `cursor-agent-api (Port 4646)` | 将 Cursor Pro / Business 订阅包装为标准 OpenAI 兼容接口，供 OpenClaw 等工具无缝调用 | 无头进程拉起 Cursor CLI (`agent`)，流式解析标准 SSE |
 | 🛡️ **双模式保活自愈** | `Systemd (宿主机) / Supervisor Loop (Docker)` | 针对宿主机与容器环境使用差异化守护策略，杜绝僵尸进程与端口冲突 | Linux 一键脚本注册 systemd 单元；Docker 内置进程生命周期捕获 |
 
@@ -137,9 +137,8 @@ socks5://127.0.0.1:19002
 - `ENABLE_NVIDIA_PROXY=true`：启用自动分配。
 - `NVIDIA_PROVIDER_NAMES=nvidia`：额外的 provider 名称，多个名称用逗号分隔。
 - `NVIDIA_PROXY_PORT_COUNT`：使用前 N 个 Mihomo 出口，不能大于 `WORKER_COUNT`。
-- `NVIDIA_PROXY_OVERRIDE=false`：默认保留 key 上已有的 `proxy-url`；设为 `true` 时覆盖。
 
-原始 `config.yaml` 不会被修改。派生配置写入 `/app/tmp/cpa-config.runtime.yaml`，权限为 `0600`。当 Mihomo 没有可用订阅时，NVIDIA 请求会失败而不会回退到直连。
+原始 `config.yaml` 不会被修改。已有非空 `proxy-url` 永远保留，只有缺失或空白值才参与轮询补全。派生配置写入 `/app/tmp/cpa-config.runtime.yaml`，权限为 `0600`。当 Mihomo 没有可用订阅时，NVIDIA 请求会失败而不会回退到直连。
 
 ---
 

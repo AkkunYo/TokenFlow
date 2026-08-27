@@ -1,0 +1,26 @@
+.git
+.github/
+.codegraph/
+.DS_Store
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+tests/
+
+*.log
+*.pid
+tmp/
+instances/
+workers.json
+mihomo.yaml
+sub-*.yaml
+*.trim
+VERSION
+ui/
+
+# Runtime credentials and generated configuration must never enter the image.
+config.yaml
+config.toml
+auth-dir/

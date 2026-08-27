@@ -62,14 +62,12 @@ def _is_nvidia_provider(provider, provider_names):
     return hostname == "nvidia.com" or hostname.endswith(".nvidia.com")
 
 
-def assign_nvidia_socks_proxies(config, proxy_urls, provider_names=None,
-                                  override_existing=False):
+def assign_nvidia_socks_proxies(config, proxy_urls, provider_names=None):
     """
     Return a deep-copied CPA config with NVIDIA keys assigned round-robin.
 
-    Existing per-key proxy settings are preserved unless override_existing is
-    explicitly enabled. Preserved entries still consume their deterministic
-    rotation slot, so later keys keep stable port assignments.
+    Existing non-empty per-key proxy settings are always preserved. Only keys
+    without a proxy participate in round-robin assignment.
     """
     if not isinstance(config, dict):
         raise ValueError("CPA config root must be a YAML mapping")
@@ -118,19 +116,18 @@ def assign_nvidia_socks_proxies(config, proxy_urls, provider_names=None,
             if not isinstance(api_key, str) or not api_key.strip():
                 continue
 
-            proxy_url = proxy_pool[rotation_slot % len(proxy_pool)]
-            rotation_slot += 1
             stats["eligible_keys"] += 1
 
             existing = entry.get("proxy-url")
             if (
-                not override_existing
-                and isinstance(existing, str)
+                isinstance(existing, str)
                 and existing.strip()
             ):
                 stats["preserved_keys"] += 1
                 continue
 
+            proxy_url = proxy_pool[rotation_slot % len(proxy_pool)]
+            rotation_slot += 1
             entry["proxy-url"] = proxy_url
             stats["assigned_keys"] += 1
 
@@ -138,7 +135,7 @@ def assign_nvidia_socks_proxies(config, proxy_urls, provider_names=None,
 
 
 def write_runtime_config(source_path, output_path, proxy_urls,
-                         provider_names=None, override_existing=False):
+                         provider_names=None):
     """Safely write a mode-0600 derived config without modifying the source."""
     source_real = os.path.realpath(source_path)
     output_real = os.path.realpath(output_path)
@@ -154,7 +151,6 @@ def write_runtime_config(source_path, output_path, proxy_urls,
         source,
         proxy_urls,
         provider_names=provider_names,
-        override_existing=override_existing,
     )
 
     output_dir = os.path.dirname(output_real) or "."
@@ -218,11 +214,6 @@ def main():
         default=",".join(DEFAULT_PROVIDER_NAMES),
         help="Comma-separated provider names treated as NVIDIA",
     )
-    parser.add_argument(
-        "--override-existing",
-        action="store_true",
-        help="Replace existing per-key proxy-url values",
-    )
     args = parser.parse_args()
 
     try:
@@ -236,7 +227,6 @@ def main():
             args.output,
             proxy_urls,
             provider_names=_parse_provider_names(args.provider_names),
-            override_existing=args.override_existing,
         )
     except Exception as exc:
         print(f"[NVIDIA Proxy] Failed to prepare runtime config: {exc}", flush=True)

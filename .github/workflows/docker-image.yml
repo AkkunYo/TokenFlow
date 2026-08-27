@@ -23,6 +23,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装测试依赖
+        run: |
+          python3 -m pip install --disable-pip-version-check -r requirements.txt coverage
+
       - name: 获取版本号与构建时间
         run: |
           TAG=$(git tag --sort=-v:refname | head -n 1)
@@ -46,6 +56,14 @@ jobs:
       - name: 运行单元测试
         run: |
           python3 -m unittest discover -s tests -p "test_*.py"
+          python3 -m coverage run --branch -m unittest tests.test_cpa_proxy_config
+          python3 -m coverage report --include=cpa_proxy_config.py --fail-under=80
+
+      - name: 校验运行时配置与脚本
+        run: |
+          python3 -m py_compile cpa_proxy_config.py gen_workers.py mihomo_config.py run_local.py assign_worker_nodes.py lb_gateway.py vpngate_provider.py
+          bash -n start.sh install.sh
+          docker compose config --quiet
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
