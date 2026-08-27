@@ -1,5 +1,6 @@
 import copy
 import io
+import inspect
 import os
 import stat
 import sys
@@ -102,7 +103,7 @@ class TestAssignNvidiaSocksProxies(unittest.TestCase):
         self.assertEqual(stats["matched_providers"], 0)
         self.assertEqual(stats["assigned_keys"], 0)
 
-    def test_preserves_explicit_proxy_and_keeps_stable_rotation_slots(self):
+    def test_preserves_explicit_proxy_and_rotates_missing_entries_only(self):
         source = _config(_provider(entries=[
             {"api-key": "nvapi-1", "proxy-url": "socks5://custom:1080"},
             {"api-key": "nvapi-2"},
@@ -116,26 +117,38 @@ class TestAssignNvidiaSocksProxies(unittest.TestCase):
 
         entries = rendered["openai-compatibility"][0]["api-key-entries"]
         self.assertEqual(entries[0]["proxy-url"], "socks5://custom:1080")
-        self.assertEqual(entries[1]["proxy-url"], "socks5://127.0.0.1:19002")
-        self.assertEqual(entries[2]["proxy-url"], "socks5://127.0.0.1:19001")
+        self.assertEqual(entries[1]["proxy-url"], "socks5://127.0.0.1:19001")
+        self.assertEqual(entries[2]["proxy-url"], "socks5://127.0.0.1:19002")
         self.assertEqual(stats["assigned_keys"], 2)
         self.assertEqual(stats["preserved_keys"], 1)
 
-    def test_can_override_existing_proxy_explicitly(self):
+    def test_blank_proxy_is_filled_but_existing_proxy_can_never_be_overridden(self):
         source = _config(_provider(entries=[
             {"api-key": "nvapi-1", "proxy-url": "socks5://custom:1080"},
+            {"api-key": "nvapi-2", "proxy-url": "   "},
         ]))
 
         rendered, stats = cpa_proxy_config.assign_nvidia_socks_proxies(
             source,
             ["socks5://127.0.0.1:19001"],
-            override_existing=True,
         )
 
-        entry = rendered["openai-compatibility"][0]["api-key-entries"][0]
-        self.assertEqual(entry["proxy-url"], "socks5://127.0.0.1:19001")
+        entries = rendered["openai-compatibility"][0]["api-key-entries"]
+        self.assertEqual(entries[0]["proxy-url"], "socks5://custom:1080")
+        self.assertEqual(entries[1]["proxy-url"], "socks5://127.0.0.1:19001")
         self.assertEqual(stats["assigned_keys"], 1)
-        self.assertEqual(stats["preserved_keys"], 0)
+        self.assertEqual(stats["preserved_keys"], 1)
+
+        self.assertNotIn(
+            "override_existing",
+            inspect.signature(
+                cpa_proxy_config.assign_nvidia_socks_proxies
+            ).parameters,
+        )
+        self.assertNotIn(
+            "override_existing",
+            inspect.signature(cpa_proxy_config.write_runtime_config).parameters,
+        )
 
     def test_does_not_mutate_source_config(self):
         source = _config(_provider(entries=[{"api-key": "nvapi-1"}]))
@@ -310,6 +323,9 @@ class TestStartupIntegration(unittest.TestCase):
             startup = handle.read()
         with open(os.path.join(project_dir, "install.sh"), encoding="utf-8") as handle:
             installer = handle.read()
+        with open(os.path.join(project_dir, "docker-compose.yml"),
+                  encoding="utf-8") as handle:
+            compose = handle.read()
 
         self.assertIn('python3 "$APP_DIR/cpa_proxy_config.py"', startup)
         self.assertIn('CPA_EFFECTIVE_CONFIG_FILE="$CPA_RUNTIME_CONFIG_FILE"', startup)
@@ -318,6 +334,9 @@ class TestStartupIntegration(unittest.TestCase):
             startup,
         )
         self.assertIn("cpa_proxy_config.py", installer)
+        self.assertNotIn("NVIDIA_PROXY_OVERRIDE", startup)
+        self.assertNotIn("--override-existing", startup)
+        self.assertNotIn("NVIDIA_PROXY_OVERRIDE", compose)
 
 
 if __name__ == "__main__":
