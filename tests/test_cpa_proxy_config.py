@@ -176,5 +176,22 @@ class TestRuntimeConfig(unittest.TestCase):
             self.assertEqual(stats["assigned_keys"], 1)
 
 
+class TestStartupIntegration(unittest.TestCase):
+    def test_startup_uses_derived_config_and_installer_packages_module(self):
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(project_dir, "start.sh"), encoding="utf-8") as handle:
+            startup = handle.read()
+        with open(os.path.join(project_dir, "install.sh"), encoding="utf-8") as handle:
+            installer = handle.read()
+
+        self.assertIn('python3 "$APP_DIR/cpa_proxy_config.py"', startup)
+        self.assertIn('CPA_EFFECTIVE_CONFIG_FILE="$CPA_RUNTIME_CONFIG_FILE"', startup)
+        self.assertIn(
+            'cliproxy --config "$CPA_EFFECTIVE_CONFIG_FILE" run',
+            startup,
+        )
+        self.assertIn("cpa_proxy_config.py", installer)
+
+
 if __name__ == "__main__":
     unittest.main()
