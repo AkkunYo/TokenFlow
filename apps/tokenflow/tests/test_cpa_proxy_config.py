@@ -329,6 +329,23 @@ class TestStartupIntegration(unittest.TestCase):
         with open(os.path.join(project_dir, "docker-compose.yml"),
                   encoding="utf-8") as handle:
             compose = handle.read()
+        with open(
+            os.path.join(app_dir, "tokenflow.sh"),
+            encoding="utf-8",
+        ) as handle:
+            tokenflow_cli = handle.read()
+        documentation = []
+        for relative_path in ("README.md", "README_CN.md", "docs/architecture.md"):
+            with open(
+                os.path.join(project_dir, relative_path),
+                encoding="utf-8",
+            ) as handle:
+                documentation.append(handle.read())
+        with open(
+            os.path.join(app_dir, "config.example.yaml"),
+            encoding="utf-8",
+        ) as handle:
+            example_config = yaml.safe_load(handle) or {}
 
         self.assertIn('python3 "$APP_DIR/cpa_proxy_config.py"', startup)
         self.assertIn('CPA_EFFECTIVE_CONFIG_FILE="$CPA_RUNTIME_CONFIG_FILE"', startup)
@@ -343,26 +360,37 @@ class TestStartupIntegration(unittest.TestCase):
         self.assertNotIn('${PROVIDER_URLS:+--sub "$PROVIDER_URLS"}', startup)
         self.assertNotIn('${DEBUG:+--debug}', startup)
         self.assertIn('if is_true "$DEBUG"; then', startup)
-        self.assertIn(
-            'CURSOR_PROXY_PORT="${CURSOR_PROXY_PORT:-$((NVIDIA_PROXY_BASE_PORT + WORKER_COUNT))}"',
-            startup,
-        )
-        self.assertIn(
-            'cp -a "$CURSOR_AGENT_DIR" /opt/cursor-agent',
-            dockerfile,
-        )
-        self.assertIn(
-            "ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent",
-            dockerfile,
-        )
-        self.assertNotIn(
-            'install -m 0755 "$(readlink -f /root/.local/bin/agent)"',
-            dockerfile,
-        )
-        self.assertNotIn(
-            "curl https://cursor.com/install -fsS | bash || true",
-            dockerfile,
-        )
+        for forbidden in (
+            "ENABLE_CURSOR",
+            "CURSOR_PORT",
+            "CURSOR_PROXY_PORT",
+            "cursor-agent-api",
+        ):
+            self.assertNotIn(forbidden, startup)
+
+        for forbidden in (
+            "cursor-agent-api-proxy",
+            "cursor.com/install",
+            "/opt/cursor-agent",
+            "nodesource",
+            "npm install",
+            "EXPOSE 18317 8081 4646 9090",
+        ):
+            self.assertNotIn(forbidden, dockerfile)
+
+        self.assertNotIn('"4646:4646"', compose)
+        self.assertNotIn("CURSOR_API_KEY", compose)
+        self.assertNotIn("cursor", installer.lower())
+        self.assertNotIn("4646", tokenflow_cli)
+        for document in documentation:
+            self.assertNotIn("cursor", document.lower())
+
+        provider_names = {
+            str(provider.get("name", "")).strip().lower()
+            for provider in example_config.get("openai-compatibility", [])
+            if isinstance(provider, dict)
+        }
+        self.assertNotIn("cursor", provider_names)
 
     def test_ci_installs_dependencies_and_docker_context_excludes_secrets(self):
         app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -394,6 +422,13 @@ class TestStartupIntegration(unittest.TestCase):
         )
         self.assertIn("bash -n apps/tokenflow/start.sh", workflow)
         self.assertIn("docker compose config --quiet", workflow)
+        self.assertIn("packages: write", workflow)
+        self.assertIn("registry: ghcr.io", workflow)
+        self.assertIn("ghcr.io/akkunyo/tokenflow:latest", workflow)
+        self.assertIn(
+            "ghcr.io/akkunyo/tokenflow:${{ env.VERSION }}",
+            workflow,
+        )
 
         self.assertTrue(os.path.exists(dockerignore_path))
         dockerignore = ""
