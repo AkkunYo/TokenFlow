@@ -83,6 +83,17 @@ class TestMonorepoLayout(unittest.TestCase):
             workflow,
         )
 
+    def test_components_do_not_define_nested_delivery_control_planes(self):
+        stale_paths = (
+            "services/gemflow/.dockerignore",
+            "services/gemflow/.github/workflows",
+        )
+        for relative in stale_paths:
+            self.assertFalse(
+                os.path.exists(os.path.join(ROOT, relative)),
+                relative,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
