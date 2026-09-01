@@ -318,8 +318,9 @@ class TestRuntimeConfig(unittest.TestCase):
 
 class TestStartupIntegration(unittest.TestCase):
     def test_startup_uses_derived_config_and_installer_packages_module(self):
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(project_dir, "start.sh"), encoding="utf-8") as handle:
+        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_dir = os.path.dirname(os.path.dirname(app_dir))
+        with open(os.path.join(app_dir, "start.sh"), encoding="utf-8") as handle:
             startup = handle.read()
         with open(os.path.join(project_dir, "install.sh"), encoding="utf-8") as handle:
             installer = handle.read()
@@ -364,7 +365,8 @@ class TestStartupIntegration(unittest.TestCase):
         )
 
     def test_ci_installs_dependencies_and_docker_context_excludes_secrets(self):
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_dir = os.path.dirname(os.path.dirname(app_dir))
         workflow_path = os.path.join(
             project_dir, ".github", "workflows", "docker-image.yml"
         )
@@ -387,10 +389,10 @@ class TestStartupIntegration(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "coverage report --include=cpa_proxy_config.py --fail-under=80",
+            "coverage report --include=apps/tokenflow/cpa_proxy_config.py --fail-under=80",
             workflow,
         )
-        self.assertIn("bash -n start.sh install.sh", workflow)
+        self.assertIn("bash -n apps/tokenflow/start.sh", workflow)
         self.assertIn("docker compose config --quiet", workflow)
 
         self.assertTrue(os.path.exists(dockerignore_path))

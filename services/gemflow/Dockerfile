@@ -23,12 +23,15 @@ RUN ARCH=$(uname -m) && \
     mv mihomo /usr/local/bin/mihomo && \
     chmod +x /usr/local/bin/mihomo
 
-# 安装 Python 依赖 (预装 gemflow 及 gemini-web2api 常用依赖)
-COPY requirements.txt /app/
+# 安装 Python 依赖 (构建上下文为 Monorepo 根目录)
+COPY services/gemflow/requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制项目代码与启动脚本
-COPY . /app/
+# 复制 Gemflow 与共享 Egress 代码，运行时保持 /app 平铺布局
+COPY services/gemflow/lb_gateway.py services/gemflow/gen_workers.py services/gemflow/run_local.py /app/
+COPY services/gemflow/start.sh services/gemflow/config.json.example /app/
+COPY packages/egress/assign_worker_nodes.py packages/egress/mihomo_config.py /app/
+COPY packages/egress/mihomo.template.yaml /app/
 RUN chmod +x /app/start.sh
 
 # 构建参数与元信息

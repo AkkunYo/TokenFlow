@@ -55,14 +55,23 @@ jobs:
 
       - name: 运行单元测试
         run: |
-          python3 -m unittest discover -s tests -p "test_*.py"
-          python3 -m coverage run --branch -m unittest tests.test_cpa_proxy_config
-          python3 -m coverage report --include=cpa_proxy_config.py --fail-under=80
+          bash scripts/test_all.sh
+          PYTHONPATH="services/gemflow:packages/egress:apps/tokenflow" \
+            python3 -m coverage run --branch -m unittest discover \
+              -s apps/tokenflow/tests -p "test_cpa_proxy_config.py"
+          python3 -m coverage report --include=apps/tokenflow/cpa_proxy_config.py --fail-under=80
 
       - name: 校验运行时配置与脚本
         run: |
-          python3 -m py_compile cpa_proxy_config.py gen_workers.py mihomo_config.py run_local.py assign_worker_nodes.py lb_gateway.py vpngate_provider.py
-          bash -n start.sh install.sh
+          python3 -m py_compile \
+            apps/tokenflow/cpa_proxy_config.py \
+            services/gemflow/gen_workers.py \
+            services/gemflow/lb_gateway.py \
+            services/gemflow/run_local.py \
+            packages/egress/assign_worker_nodes.py \
+            packages/egress/mihomo_config.py \
+            packages/egress/vpngate_provider.py
+          bash -n apps/tokenflow/start.sh services/gemflow/start.sh install.sh scripts/test_all.sh
           docker compose config --quiet
 
       - name: Set up QEMU

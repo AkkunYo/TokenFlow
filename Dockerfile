@@ -21,11 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. 下载并安装 Mihomo (Clash Meta) 二进制内核
+ARG MIHOMO_VERSION=1.19.30
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "x86_64" ]; then MIHOMO_ARCH="amd64-compatible"; \
     elif [ "$ARCH" = "aarch64" ]; then MIHOMO_ARCH="arm64"; \
     else MIHOMO_ARCH="amd64"; fi && \
-    curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.22/mihomo-linux-${MIHOMO_ARCH}-v1.19.22.gz" -o /tmp/mihomo.gz && \
+    curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-${MIHOMO_ARCH}-v${MIHOMO_VERSION}.gz" -o /tmp/mihomo.gz && \
     gzip -d /tmp/mihomo.gz && \
     mv /tmp/mihomo /usr/local/bin/mihomo && \
     chmod +x /usr/local/bin/mihomo
@@ -111,8 +112,13 @@ RUN if ! id -u user >/dev/null 2>&1; then useradd -m -u 1000 user; fi && \
     mkdir -p /home/user/app /home/user/.cursor /app/auth-dir /app/ui && \
     chown -R user:user /app /home/user
 
-# 9. 复制所有本地源码与配置文件
-COPY --chown=user:user . /app/
+# 9. 按 Monorepo 所有权复制源码，运行时平铺以保持兼容
+COPY --chown=user:user services/gemflow/lb_gateway.py services/gemflow/gen_workers.py services/gemflow/run_local.py /app/
+COPY --chown=user:user services/gemflow/config.json.example /app/config.json.example
+COPY --chown=user:user packages/egress/assign_worker_nodes.py packages/egress/mihomo_config.py packages/egress/vpngate_provider.py /app/
+COPY --chown=user:user packages/egress/mihomo.template.yaml /app/mihomo.template.yaml
+COPY --chown=user:user apps/tokenflow/cpa_proxy_config.py apps/tokenflow/start.sh apps/tokenflow/tokenflow.sh /app/
+COPY --chown=user:user apps/tokenflow/config.example.yaml /app/config.example.yaml
 RUN chmod +x /app/start.sh /app/vpngate_provider.py /app/run_local.py /app/cpa_proxy_config.py 2>/dev/null || true
 
 USER user
