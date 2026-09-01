@@ -431,7 +431,13 @@ class TestStartupIntegration(unittest.TestCase):
             "ghcr.io/akkunyo/tokenflow:${{ env.VERSION }}",
             workflow,
         )
+        self.assertIn("ghcr.io/akkunyo/gemflow:latest", workflow)
+        self.assertIn(
+            "ghcr.io/akkunyo/gemflow:${{ env.VERSION }}",
+            workflow,
+        )
         self.assertNotIn("registry.cn-hangzhou.aliyuncs.com", workflow)
+        self.assertNotIn("ALIYUN_", workflow)
 
         self.assertTrue(os.path.exists(dockerignore_path))
         dockerignore = ""
