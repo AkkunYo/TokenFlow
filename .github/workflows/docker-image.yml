@@ -35,7 +35,7 @@ jobs:
 
       - name: 获取版本号与构建时间
         run: |
-          TAG=$(git tag --sort=-v:refname | head -n 1)
+          TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)
 
           if [ -z "$TAG" ]; then
             BUILD_NUM=$(git rev-list --count HEAD)
