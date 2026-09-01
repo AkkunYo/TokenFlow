@@ -380,10 +380,12 @@ class TestStartupIntegration(unittest.TestCase):
 
         self.assertNotIn('"4646:4646"', compose)
         self.assertNotIn("CURSOR_API_KEY", compose)
+        self.assertNotIn("registry.cn-hangzhou.aliyuncs.com", compose)
         self.assertNotIn("cursor", installer.lower())
         self.assertNotIn("4646", tokenflow_cli)
         for document in documentation:
             self.assertNotIn("cursor", document.lower())
+            self.assertNotIn("registry.cn-hangzhou.aliyuncs.com", document)
 
         provider_names = {
             str(provider.get("name", "")).strip().lower()
@@ -429,6 +431,7 @@ class TestStartupIntegration(unittest.TestCase):
             "ghcr.io/akkunyo/tokenflow:${{ env.VERSION }}",
             workflow,
         )
+        self.assertNotIn("registry.cn-hangzhou.aliyuncs.com", workflow)
 
         self.assertTrue(os.path.exists(dockerignore_path))
         dockerignore = ""
