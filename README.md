@@ -31,6 +31,29 @@
 
 ---
 
+## 📦 Monorepo Structure
+
+```text
+apps/tokenflow/       CPA, NVIDIA, Cursor and product startup
+services/gemflow/     Gemini workers and sticky load balancing
+packages/egress/      Mihomo configuration, providers and node assignment
+scripts/              Repository-wide verification
+```
+
+The repository publishes both the final `tokenflow` image and the standalone
+`gemflow` image. Source ownership is separated in Git, while the TokenFlow
+container keeps the existing flat `/app` runtime layout for compatibility.
+
+Run every component test with:
+
+```bash
+bash scripts/test_all.sh
+```
+
+See [docs/architecture.md](docs/architecture.md) for dependency boundaries.
+
+---
+
 ## 🏗️ Architecture
 
 ```text

@@ -136,27 +136,35 @@ EOF
 
 pip3 install --no-cache-dir -r "$INSTALL_DIR/requirements.txt" || pip install --break-system-packages -r "$INSTALL_DIR/requirements.txt" || true
 
-# 9. 部署源码、配置文件、转换模块与管理工具
-for pyfile in lb_gateway.py gen_workers.py assign_worker_nodes.py mihomo_config.py run_local.py vpngate_provider.py cpa_proxy_config.py; do
-    if [ -f "./$pyfile" ]; then
-        cp "./$pyfile" "$INSTALL_DIR/$pyfile"
-        chmod +x "$INSTALL_DIR/$pyfile"
+# 9. 部署 Monorepo 组件源码、配置文件与管理工具
+for source_file in \
+    services/gemflow/lb_gateway.py \
+    services/gemflow/gen_workers.py \
+    services/gemflow/run_local.py \
+    packages/egress/assign_worker_nodes.py \
+    packages/egress/mihomo_config.py \
+    packages/egress/vpngate_provider.py \
+    apps/tokenflow/cpa_proxy_config.py; do
+    if [ -f "./$source_file" ]; then
+        target_name="$(basename "$source_file")"
+        cp "./$source_file" "$INSTALL_DIR/$target_name"
+        chmod +x "$INSTALL_DIR/$target_name"
     fi
 done
 
-if [ -f "./mihomo.template.yaml" ]; then
-    cp ./mihomo.template.yaml "$INSTALL_DIR/mihomo.template.yaml"
+if [ -f "./packages/egress/mihomo.template.yaml" ]; then
+    cp ./packages/egress/mihomo.template.yaml "$INSTALL_DIR/mihomo.template.yaml"
 fi
 
-if [ -f "./config.example.yaml" ]; then
-    cp ./config.example.yaml "$INSTALL_DIR/config.example.yaml"
+if [ -f "./apps/tokenflow/config.example.yaml" ]; then
+    cp ./apps/tokenflow/config.example.yaml "$INSTALL_DIR/config.example.yaml"
 fi
 if [ ! -f "$INSTALL_DIR/config.yaml" ] && [ -f "$INSTALL_DIR/config.example.yaml" ]; then
     cp "$INSTALL_DIR/config.example.yaml" "$INSTALL_DIR/config.yaml"
 fi
 
-if [ -f "./tokenflow.sh" ]; then
-    cp ./tokenflow.sh "$BIN_DIR/tokenflow"
+if [ -f "./apps/tokenflow/tokenflow.sh" ]; then
+    cp ./apps/tokenflow/tokenflow.sh "$BIN_DIR/tokenflow"
     chmod +x "$BIN_DIR/tokenflow"
 fi
 
@@ -185,8 +193,8 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-if [ -f "./start.sh" ]; then
-    cp ./start.sh "$INSTALL_DIR/start.sh"
+if [ -f "./apps/tokenflow/start.sh" ]; then
+    cp ./apps/tokenflow/start.sh "$INSTALL_DIR/start.sh"
     chmod +x "$INSTALL_DIR/start.sh"
 fi
 

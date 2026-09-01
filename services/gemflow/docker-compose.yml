@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  gemflow:
+    image: registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
+    # 若需本地源码构建，从 Monorepo 根目录执行：
+    # build:
+    #   context: ../..
+    #   dockerfile: services/gemflow/Dockerfile
+    container_name: gemflow
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - WORKER_COUNT=4               # 运行实例数 (海外直连+代理 / 国内全走代理分流)
+      - DEBUG=true                   # 开启路由与指纹调试日志
+      # - PROVIDER_URLS=https://example.com/api/v1/client/subscribe?token=xxx # 填入你的节点订阅链接 (支持 Clash YAML 或 V2Ray/Base64/VLESS，多行或单个)
+    volumes:
+      - ./instances:/app/instances
