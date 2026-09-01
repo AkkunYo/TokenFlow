@@ -29,6 +29,28 @@
 
 ---
 
+## 📦 Monorepo 目录
+
+```text
+apps/tokenflow/       CPA、NVIDIA、Cursor 与产品启动编排
+services/gemflow/     Gemini Workers 与粘滞负载均衡
+packages/egress/      Mihomo 配置、订阅与节点分配
+scripts/              全仓验证脚本
+```
+
+同一仓库同时发布最终 `tokenflow` 镜像和独立 `gemflow` 镜像。Git 中按所有权
+拆分源码，TokenFlow 容器内仍平铺到 `/app`，因此现有配置和启动路径保持兼容。
+
+运行全部组件测试：
+
+```bash
+bash scripts/test_all.sh
+```
+
+依赖边界见 [docs/architecture.md](docs/architecture.md)。
+
+---
+
 ## 🏗️ 架构拓扑
 
 ```text

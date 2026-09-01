@@ -78,7 +78,7 @@ Google Gemini 模型具备服务端 **Prompt KV 前缀缓存加速机制**。传
 
 ### 出口节点分配机制
 
-每个 Worker 在 Mihomo 配置中拥有专属策略组 `🎯 Worker-N`，其监听端口 `19000+N` 一对一绑定到该组。Mihomo 启动后，`assign_worker_nodes.py` 通过 external-controller REST API（`127.0.0.1:9090`）执行分配：
+每个 Worker 在 Mihomo 配置中拥有专属策略组 `🎯 Worker-N`，其监听端口 `19000+N` 一对一绑定到该组。Mihomo 启动后，`packages/egress/assign_worker_nodes.py` 通过 external-controller REST API（`127.0.0.1:9090`）执行分配：
 
 1. 轮询等待订阅加载与 health-check 完成，最长 45 秒
 2. 收集订阅中的真实出口节点（排除策略组自身、直连类节点、无测速历史的节点）
@@ -86,7 +86,7 @@ Google Gemini 模型具备服务端 **Prompt KV 前缀缓存加速机制**。传
 
 降级策略：健康节点数少于 Worker 数时，节点按顺序轮转复用并打印提示；一个健康节点都探测不到时，各组保留默认的 `♻️ 自动选择`（url-test 自动择优），保证链路可用性优先于出口分散性。
 
-> 配置渲染由 `mihomo_config.py` 统一负责，容器（`start.sh`）与本地（`run_local.py`）两条启动路径产出完全一致的配置。
+> 配置渲染由 `packages/egress/mihomo_config.py` 统一负责，容器与本地两条启动路径产出完全一致的配置。
 
 ---
 
@@ -97,15 +97,17 @@ Google Gemini 模型具备服务端 **Prompt KV 前缀缓存加速机制**。传
 适用于本地 macOS、Linux 或 Windows 环境调试与运行：
 
 ```bash
-# 1. 克隆并安装依赖
-git clone https://github.com/your-username/gemflow.git
-cd gemflow
-pip install -r requirements.txt
+# 1. 克隆 Monorepo 并安装 Gemflow 依赖
+git clone https://github.com/AkkunYo/TokenFlow.git
+cd TokenFlow
+pip install -r services/gemflow/requirements.txt
 
 # 2. 将你的 gemini_web2api.py 复制到根目录（可选，若已有独立运行实例则跳过）
 
 # 3. 一键启动 4 个 Worker 实例并挂载节点订阅链接（支持 Clash YAML 或 V2Ray / Base64 / VLESS / SS 订阅链接）
-python3 run_local.py --workers 4 --port 8081 --sub "https://example.com/api/v1/client/subscribe?token=xxx" --debug
+PYTHONPATH="services/gemflow:packages/egress" \
+  python3 services/gemflow/run_local.py --workers 4 --port 8081 \
+    --sub "https://example.com/api/v1/client/subscribe?token=xxx" --debug
 ```
 
 ### 方式二：Docker / Docker Compose 部署
@@ -118,14 +120,8 @@ docker run -d -p 8081:8081 \
   -e DEBUG=true \
   --name gemflow registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
 
-# 2. 或使用 Docker Compose 一键拉起
-# 下载官方 docker-compose.yml 配置文件 (如未克隆仓库)
-curl -fsSL https://raw.githubusercontent.com/AkkunYo/gemflow/main/docker-compose.yml -o docker-compose.yml
-# 国内加速下载备选：
-# curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/AkkunYo/gemflow/main/docker-compose.yml -o docker-compose.yml
-
-# 启动服务
-docker compose up -d
+# 2. 或在 Monorepo 根目录使用 Docker Compose
+docker compose -f services/gemflow/docker-compose.yml up -d
 ```
 
 ---

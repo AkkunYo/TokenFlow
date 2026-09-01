@@ -80,7 +80,7 @@ Google Gemini models implement **Prompt KV Prefix Caching**. Random or naive rou
 
 ### Egress Node Assignment
 
-Each worker owns a dedicated Mihomo policy group `🎯 Worker-N`, and its listener port `19000+N` binds one-to-one to that group. After Mihomo starts, `assign_worker_nodes.py` performs the assignment through the external-controller REST API (`127.0.0.1:9090`):
+Each worker owns a dedicated Mihomo policy group `🎯 Worker-N`, and its listener port `19000+N` binds one-to-one to that group. After Mihomo starts, `packages/egress/assign_worker_nodes.py` performs the assignment through the external-controller REST API (`127.0.0.1:9090`):
 
 1. Poll until provider subscriptions load and health-checks complete (up to 45s)
 2. Collect real egress nodes from the subscription (excluding policy groups themselves, direct-type nodes, and nodes with no latency history)
@@ -88,7 +88,7 @@ Each worker owns a dedicated Mihomo policy group `🎯 Worker-N`, and its listen
 
 Graceful degradation: when healthy nodes are fewer than proxied workers, nodes are reused in rotation with a notice logged; when no healthy node is found at all, every group keeps its default `♻️ 自动选择` (url-test auto-select), prioritizing connectivity over egress diversity.
 
-> Config rendering is centralized in `mihomo_config.py`, so the container path (`start.sh`) and the local path (`run_local.py`) produce identical configuration.
+> Config rendering is centralized in `packages/egress/mihomo_config.py`, so the container path and local path produce identical configuration.
 
 ---
 
@@ -97,13 +97,15 @@ Graceful degradation: when healthy nodes are fewer than proxied workers, nodes a
 ### 1. Local Python Run
 
 ```bash
-# Clone and install dependencies
-git clone https://github.com/your-username/gemflow.git
-cd gemflow
-pip install -r requirements.txt
+# Clone the Monorepo and install Gemflow dependencies
+git clone https://github.com/AkkunYo/TokenFlow.git
+cd TokenFlow
+pip install -r services/gemflow/requirements.txt
 
 # Start 4 workers with subscription (supports Clash YAML or V2Ray / Base64 / VLESS / SS) and debug logging
-python3 run_local.py --workers 4 --port 8081 --sub "https://example.com/api/v1/client/subscribe?token=xxx" --debug
+PYTHONPATH="services/gemflow:packages/egress" \
+  python3 services/gemflow/run_local.py --workers 4 --port 8081 \
+    --sub "https://example.com/api/v1/client/subscribe?token=xxx" --debug
 ```
 
 ### 2. Docker & Docker Compose
@@ -116,12 +118,8 @@ docker run -d -p 8081:8081 \
   -e DEBUG=true \
   --name gemflow registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
 
-# 2. Or using Docker Compose
-# Download docker-compose.yml configuration (if repository is not cloned)
-curl -fsSL https://raw.githubusercontent.com/AkkunYo/gemflow/main/docker-compose.yml -o docker-compose.yml
-
-# Launch services
-docker compose up -d
+# 2. Or using Docker Compose from the Monorepo root
+docker compose -f services/gemflow/docker-compose.yml up -d
 ```
 
 ---

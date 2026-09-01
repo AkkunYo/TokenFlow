@@ -88,10 +88,11 @@ jobs:
           username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
           password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
-      - name: 构建并推送镜像
+      - name: 构建并推送 TokenFlow 镜像
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           build-args: |
@@ -100,8 +101,26 @@ jobs:
           tags: |
             registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest
             registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=tokenflow
+          cache-to: type=gha,mode=max,scope=tokenflow
+          provenance: false
+          sbom: false
+
+      - name: 构建并推送 Gemflow 镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/gemflow/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            BUILD_VERSION=${{ env.VERSION }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
+          tags: |
+            registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
+            registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:${{ env.VERSION }}
+          cache-from: type=gha,scope=gemflow
+          cache-to: type=gha,mode=max,scope=gemflow
           provenance: false
           sbom: false
 
@@ -114,6 +133,8 @@ jobs:
           echo "可直接拉取使用的镜像地址："
           echo "  - registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest"
           echo "  - registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}"
+          echo "  - registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest"
+          echo "  - registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:${{ env.VERSION }}"
           echo ""
           echo "拉取命令示例："
           echo "  docker pull registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest"
@@ -123,6 +144,8 @@ jobs:
           echo "### 🚀 Docker 镜像构建并推送成功" >> $GITHUB_STEP_SUMMARY
           echo "- **Latest**: \`registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Versioned**: \`registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gemflow Latest**: \`registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gemflow Versioned**: \`registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "docker pull registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest" >> $GITHUB_STEP_SUMMARY
