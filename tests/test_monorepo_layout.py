@@ -77,6 +77,11 @@ class TestMonorepoLayout(unittest.TestCase):
 
         self.assertIn("bash scripts/test_all.sh", workflow)
         self.assertIn("apps/tokenflow/cpa_proxy_config.py", workflow)
+        self.assertIn("file: services/gemflow/Dockerfile", workflow)
+        self.assertIn(
+            "registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
