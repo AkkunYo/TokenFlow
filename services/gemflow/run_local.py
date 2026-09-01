@@ -33,7 +33,12 @@ import gen_workers
 BASE_DIR = SOURCE_DIR
 WORKERS_JSON = os.path.join(BASE_DIR, "workers.json")
 MIHOMO_CONFIG = os.path.join(BASE_DIR, "mihomo.yaml")
-TEMPLATE_YAML = os.path.join(BASE_DIR, "mihomo.template.yaml")
+EGRESS_ASSET_DIR = (
+    MONOREPO_EGRESS_DIR
+    if os.path.isdir(MONOREPO_EGRESS_DIR)
+    else BASE_DIR
+)
+TEMPLATE_YAML = os.path.join(EGRESS_ASSET_DIR, "mihomo.template.yaml")
 SUB_FILE = os.path.join(BASE_DIR, "provider_urls.txt")
 UPSTREAM_PY_URL = "https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py"
 UPSTREAM_MIRROR_PY_URL = "https://ghfast.top/https://raw.githubusercontent.com/Sophomoresty/gemini-web2api/refs/heads/main/gemini_web2api.py"
