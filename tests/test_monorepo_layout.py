@@ -80,9 +80,10 @@ class TestMonorepoLayout(unittest.TestCase):
         self.assertIn("git tag --list 'v[0-9]*'", workflow)
         self.assertIn("file: services/gemflow/Dockerfile", workflow)
         self.assertIn(
-            "registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest",
+            "ghcr.io/akkunyo/gemflow:latest",
             workflow,
         )
+        self.assertNotIn("registry.cn-hangzhou.aliyuncs.com", workflow)
 
     def test_components_do_not_define_nested_delivery_control_planes(self):
         stale_paths = (

@@ -567,3 +567,78 @@ class TestProbeRateLimiting(unittest.TestCase):
             lb_gateway.probe_single_worker_egress = orig
 
         self.assertEqual([wid for wid, _ in results], list(range(1, 10)))
+
+
+class TestBotChallengeDetection(unittest.TestCase):
+    """Google CAPTCHA / 阻断 HTML 软失败检测"""
+
+    def test_detects_captcha_form_keyword(self):
+        chunk = b"<html><form id=\"captcha-form\" action=\"/sorry/index\">...</form></html>"
+        headers = [("Content-Type", "text/html; charset=utf-8")]
+        self.assertTrue(lb_gateway.is_bot_challenge(200, headers, chunk))
+
+    def test_detects_recaptcha_keyword(self):
+        chunk = b"<!DOCTYPE html><html><script src=\"https://www.google.com/recaptcha/api.js\"></script></html>"
+        headers = [("Content-Type", "text/html")]
+        self.assertTrue(lb_gateway.is_bot_challenge(200, headers, chunk))
+
+    def test_detects_unusual_traffic_keyword(self):
+        chunk = b"<p>Our systems have detected unusual traffic from your computer network.</p>"
+        headers = [("Content-Type", "text/html")]
+        self.assertTrue(lb_gateway.is_bot_challenge(200, headers, chunk))
+
+    def test_detects_html_content_type_with_html_tags(self):
+        chunk = b"<!DOCTYPE html><html><body>Error</body></html>"
+        headers = [("Content-Type", "text/html; charset=utf-8")]
+        self.assertTrue(lb_gateway.is_bot_challenge(200, headers, chunk))
+
+    def test_passes_valid_openai_json_response(self):
+        chunk = b'{\n  "id": "chatcmpl-abc123",\n  "object": "chat.completion",\n  "choices": []\n}'
+        headers = [("Content-Type", "application/json")]
+        self.assertFalse(lb_gateway.is_bot_challenge(200, headers, chunk))
+
+    def test_passes_valid_sse_stream(self):
+        chunk = b'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        headers = [("Content-Type", "text/event-stream")]
+        self.assertFalse(lb_gateway.is_bot_challenge(200, headers, chunk))
+
+    def test_passes_empty_chunk(self):
+        headers = [("Content-Type", "application/json")]
+        self.assertFalse(lb_gateway.is_bot_challenge(200, headers, b""))
+
+
+class TestHealthEndpoint(unittest.TestCase):
+    """网关 /health 探测接口与版本元数据"""
+
+    def test_health_json_structure(self):
+        import io
+        from unittest.mock import MagicMock
+
+        handler = lb_gateway.LBProxyHandler.__new__(lb_gateway.LBProxyHandler)
+        handler.path = "/health"
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+
+        written_headers = {}
+        def fake_send_header(k, v):
+            written_headers[k] = v
+
+        status_code = [None]
+        def fake_send_response(code):
+            status_code[0] = code
+
+        handler.send_header = fake_send_header
+        handler.send_response = fake_send_response
+        handler.end_headers = MagicMock()
+
+        handler.do_GET()
+
+        self.assertEqual(status_code[0], 200)
+        self.assertEqual(written_headers.get("Content-Type"), "application/json")
+        payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertIn("status", payload)
+        self.assertIn("version", payload)
+        self.assertIn("build_time", payload)
+        self.assertIn("workers_total", payload)
+        self.assertIn("workers_healthy", payload)
+

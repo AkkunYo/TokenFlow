@@ -23,16 +23,17 @@ Dependencies must remain one-way:
 ## Runtime Compatibility
 
 The repository layout is modular, but both Docker images copy their required
-component files into a flat `/app` runtime directory. Existing imports, config
-paths, ports and mounted data directories remain unchanged.
+component files into a flat `/app` runtime directory. Existing CPA, Gemflow and
+Mihomo imports, config paths and mounted data directories remain unchanged.
+TokenFlow exposes ports `18317`, `8081` and `9090`.
 
 ## Published Images
 
-- `registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow`
-- `registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow`
+- `ghcr.io/akkunyo/tokenflow`
+- `ghcr.io/akkunyo/gemflow`
 
-Both images are built from the Monorepo root so shared Egress code has one
-canonical source.
+Both images are published to GHCR and built from the Monorepo root so shared
+Egress code has one canonical source.
 
 ## Verification
 

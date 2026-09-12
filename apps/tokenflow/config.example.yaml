@@ -76,23 +76,3 @@ openai-compatibility:
   #   models:
   #     - name: meta/llama-3.1-70b-instruct
   #       alias: ""
-
-  # 3. 内置 cursor-agent-api-proxy (Cursor CLI API Proxy)
-  - name: cursor
-    priority: 2
-    base-url: http://127.0.0.1:4646/v1
-    api-key-entries:
-      - api-key: not-needed
-    models:
-      - name: auto
-        alias: "cursor/auto"
-      - name: gpt-5.2
-        alias: "cursor/gpt-5.2"
-      - name: gpt-5.3-codex
-        alias: "cursor/gpt-5.3-codex"
-      - name: opus-4.6-thinking
-        alias: "cursor/opus-4.6-thinking"
-      - name: sonnet-4.5-thinking
-        alias: "cursor/sonnet-4.5-thinking"
-      - name: gemini-3-pro
-        alias: "cursor/gemini-3-pro"

@@ -6,11 +6,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Architecture](https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-blue)](https://github.com/AkkunYo/TokenFlow)
 [![Python Version](https://img.shields.io/badge/Python-3.9%2B-brightgreen)](https://www.python.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-green)](https://nodejs.org/)
 
-**Unified AI Gateway with Multi-Instance Sticky Load Balancing, Multi-Egress Routing, and CLI API Bridging.**
+**Unified AI Gateway with Multi-Instance Sticky Load Balancing and Multi-Egress Routing.**
 
-集成了 **CLIProxyAPI (CPA)**、**Gemini-Web2API (gemflow 粘滞负载网关)** 与 **Cursor Agent API Proxy** 的多功能高可用聚合网关。
+集成 **CLIProxyAPI (CPA)**、**Gemini-Web2API (gemflow 粘滞负载网关)** 与 **Mihomo 多出口路由** 的高可用聚合网关。
 
 [中文文档 (README_CN.md)](README_CN.md) | [English Documentation](README.md)
 
@@ -26,7 +25,6 @@
 | ⚡ **Prompt KV Cache Locality** | `gemflow (Port 8081)` | Sticky session routing via user / MD5 fingerprint cutting TTFT by ~72% | In-memory session affinity + Least-Connection scheduling |
 | 🌐 **Multi-Egress & Web Dashboard** | `Mihomo + Zashboard (:9090/ui)` | Dedicated per-worker proxy listeners (`19001..`) + modern Web UI for node monitoring | Dynamic policy groups + integrated visual dashboard at `:9090/ui` |
 | 🟩 **Per-Key NVIDIA SOCKS Routing** | `CLIProxyAPI + Mihomo` | Round-robins NVIDIA keys missing a proxy across dedicated SOCKS5 egress listeners | Writes a mode-`0600` runtime config, preserves the read-only source, and never replaces an existing `proxy-url` |
-| 💻 **Cursor CLI Bridge** | `cursor-agent-api (Port 4646)` | Converts Cursor Pro/Business subscription into standard OpenAI API format | Headless `agent` process spawning & SSE streaming |
 | 🛡️ **Dual-Mode Self-Healing** | `Systemd (Host) / Shell Loop (Docker)` | Differentiates host OS service supervisor from lightweight container loop | `install.sh` systemd unit vs `start.sh` background PID tracking |
 
 ---
@@ -34,7 +32,7 @@
 ## 📦 Monorepo Structure
 
 ```text
-apps/tokenflow/       CPA, NVIDIA, Cursor and product startup
+apps/tokenflow/       CPA, NVIDIA and product startup
 services/gemflow/     Gemini workers and sticky load balancing
 packages/egress/      Mihomo configuration, providers and node assignment
 scripts/              Repository-wide verification
@@ -57,29 +55,24 @@ See [docs/architecture.md](docs/architecture.md) for dependency boundaries.
 ## 🏗️ Architecture
 
 ```text
-                                    [Client Request]
-                                           │
-                                           ▼
-                       ┌───────────────────────────────────────┐
-                       │    TokenFlow Main Gateway (:18317)    │
-                       │           (CLIProxyAPI)               │
-                       └───┬───────────────────────────────┬───┘
-                           │                               │
-            ┌──────────────┘                               └──────────────┐
-            ▼                                                             ▼
- ┌──────────────────────────────────────┐                      ┌──────────────────────┐
- │    gemflow Sticky Gateway (:8081)    │                      │  Cursor Proxy (:4646)│
- │  - Context / Session Affinity        │                      │  - Cursor CLI Agent  │
- │  - Least-Conn + 429/5xx Failover     │                      │  - OpenAI Stream     │
- └───┬──────────┬──────────┬────────────┘                      └──────────────────────┘
-     │          │          │
-     ▼          ▼          ▼
- ┌────────┐ ┌────────┐ ┌────────┐
- │Worker 1│ │Worker 2│ │Worker N│
- └───┬────┘ └───┬────┘ └───┬────┘
-     │          │          │
-     ▼          ▼          ▼
- [Direct]   [Proxy A]  [Proxy B] (Mihomo Multi-Egress)
+                         [Client Request]
+                                │
+                                ▼
+              [TokenFlow / CLIProxyAPI :18317]
+                    │                     │
+                    ▼                     ▼
+       [gemflow Sticky Gateway]    [NVIDIA Provider Keys]
+                :8081                per-key proxy-url
+                    │                     │
+                    ▼                     │
+             [Workers 1..N]               │
+                    │                     │
+                    └──────────┬──────────┘
+                               ▼
+              [Mihomo SOCKS5 :19001..19000+N]
+                               │
+                               ▼
+                       [Upstream Networks]
 ```
 
 ---
@@ -106,10 +99,10 @@ docker run -d \
   --name tokenflow \
   -p 18317:18317 \
   -p 8081:8081 \
-  -p 4646:4646 \
+  -p 9090:9090 \
   -e WORKER_COUNT=4 \
   -e PROVIDER_URLS="https://example.com/sub?token=xxx" \
-  registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest
+  ghcr.io/akkunyo/tokenflow:latest
 ```
 
 ```bash
@@ -139,7 +132,6 @@ The source `config.yaml` remains unchanged. Existing non-empty `proxy-url` value
 | :--- | :--- | :--- |
 | **CLIProxyAPI (Main Gateway)** | `18317` | HTTP / OpenAI compatible unified entrypoint |
 | **gemflow (Gemini Gateway)** | `8081` | HTTP / OpenAI compatible sticky load balancer |
-| **Cursor Proxy (Cursor Agent)** | `4646` | HTTP / OpenAI compatible proxy |
 | **Mihomo & Zashboard** | `9090` | Web Dashboard (`http://<ip>:9090/ui`) & Controller API |
 
 ---

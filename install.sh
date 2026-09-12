@@ -49,29 +49,16 @@ esac
 log_info "Detected system architecture: $ARCH (Mapping: CLIProxy=$CLI_ARCH, Mihomo=$MIHOMO_ARCH)"
 
 # 3. 安装系统依赖工具
-log_info "Installing required packages (curl, git, tar, gzip, python3, pip, nodejs)..."
+log_info "Installing required packages (curl, git, tar, gzip, python3, pip)..."
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update -y
     apt-get install -y curl git tar gzip python3 python3-pip python3-venv procps
-    if ! command -v node >/dev/null 2>&1; then
-        log_info "Setting up Node.js 20 repository..."
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-    fi
 elif command -v dnf >/dev/null 2>&1; then
     dnf install -y curl git tar gzip python3 python3-pip procps-ng
-    if ! command -v node >/dev/null 2>&1; then
-        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-        dnf install -y nodejs
-    fi
 elif command -v yum >/dev/null 2>&1; then
     yum install -y curl git tar gzip python3 python3-pip procps-ng
-    if ! command -v node >/dev/null 2>&1; then
-        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-        yum install -y nodejs
-    fi
 elif command -v pacman >/dev/null 2>&1; then
-    pacman -Sy --noconfirm curl git tar gzip python python-pip nodejs npm procps-ng
+    pacman -Sy --noconfirm curl git tar gzip python python-pip procps-ng
 fi
 
 # 4. 创建安装目录
@@ -111,18 +98,7 @@ if os.path.exists("$BIN_DIR/cliproxy"):
 EOF
 rm -rf /tmp/cliproxy*
 
-# 7. 安装 Cursor CLI 与 cursor-agent-api-proxy
-log_info "Installing Cursor CLI and cursor-agent-api-proxy..."
-curl https://cursor.com/install -fsS | bash || true
-if [ -f /root/.local/bin/agent ]; then
-    ln -sf /root/.local/bin/agent "$BIN_DIR/agent"
-fi
-if [ -f /root/.local/bin/cursor-agent ]; then
-    ln -sf /root/.local/bin/cursor-agent "$BIN_DIR/cursor-agent"
-fi
-npm install -g cursor-agent-api-proxy || true
-
-# 8. 同步 gemflow / TokenFlow 核心运行时代码
+# 7. 同步 gemflow / TokenFlow 核心运行时代码
 log_info "Setting up Python runtime dependencies in $INSTALL_DIR..."
 cat <<'EOF' > "$INSTALL_DIR/requirements.txt"
 httpx>=0.25.0
@@ -136,7 +112,7 @@ EOF
 
 pip3 install --no-cache-dir -r "$INSTALL_DIR/requirements.txt" || pip install --break-system-packages -r "$INSTALL_DIR/requirements.txt" || true
 
-# 9. 部署 Monorepo 组件源码、配置文件与管理工具
+# 8. 部署 Monorepo 组件源码、配置文件与管理工具
 for source_file in \
     services/gemflow/lb_gateway.py \
     services/gemflow/gen_workers.py \
@@ -168,7 +144,7 @@ if [ -f "./apps/tokenflow/tokenflow.sh" ]; then
     chmod +x "$BIN_DIR/tokenflow"
 fi
 
-# 10. 配置 systemd 守护进程 (宿主机标准守护模式)
+# 9. 配置 systemd 守护进程 (宿主机标准守护模式)
 log_info "Configuring systemd service: $SYSTEMD_SERVICE_FILE..."
 cat <<EOF > "$SYSTEMD_SERVICE_FILE"
 [Unit]
@@ -183,7 +159,6 @@ Environment=APP_DIR=$INSTALL_DIR
 Environment=CPA_CONFIG_FILE=$INSTALL_DIR/config.yaml
 Environment=PORT=8081
 Environment=CPA_PORT=18317
-Environment=CURSOR_PORT=4646
 ExecStart=$INSTALL_DIR/start.sh
 Restart=always
 RestartSec=3s
@@ -216,5 +191,4 @@ echo ""
 echo "Config File Location: $INSTALL_DIR/config.yaml"
 echo "Main Port (CPA)     : 18317"
 echo "Gemflow Port        : 8081"
-echo "Cursor Proxy Port   : 4646"
 echo ""

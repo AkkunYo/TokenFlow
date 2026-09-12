@@ -18,7 +18,6 @@ CPA_CONFIG_FILE="${CPA_CONFIG_FILE:-$APP_DIR/config.yaml}"
 CPA_RUNTIME_CONFIG_FILE="${CPA_RUNTIME_CONFIG_FILE:-$APP_DIR/tmp/cpa-config.runtime.yaml}"
 CPA_EFFECTIVE_CONFIG_FILE="$CPA_CONFIG_FILE"
 ENABLE_GEMFLOW="${ENABLE_GEMFLOW:-true}"
-ENABLE_CURSOR="${ENABLE_CURSOR:-true}"
 ENABLE_CPA="${ENABLE_CPA:-true}"
 ENABLE_VPNGATE="${ENABLE_VPNGATE:-true}"
 ENABLE_ZASHBOARD="${ENABLE_ZASHBOARD:-true}"
@@ -26,7 +25,6 @@ ENABLE_NVIDIA_PROXY="${ENABLE_NVIDIA_PROXY:-true}"
 
 CPA_PORT="${CPA_PORT:-18317}"
 GEMFLOW_PORT="${PORT:-8081}"
-CURSOR_PORT="${CURSOR_PORT:-4646}"
 MIHOMO_CONTROLLER_PORT="${MIHOMO_CONTROLLER_PORT:-9090}"
 MIHOMO_SECRET="${MIHOMO_SECRET:-}"
 WORKER_COUNT="${WORKER_COUNT:-1}"
@@ -53,9 +51,6 @@ case "$NVIDIA_PROXY_BASE_PORT" in
         ;;
 esac
 
-# Cursor 默认复用最后一个已存在的 Worker listener，避免引用未生成端口。
-CURSOR_PROXY_PORT="${CURSOR_PROXY_PORT:-$((NVIDIA_PROXY_BASE_PORT + WORKER_COUNT))}"
-
 CHILD_PIDS=""
 
 cleanup() {
@@ -64,7 +59,6 @@ cleanup() {
     for p in $CHILD_PIDS; do
         kill "$p" 2>/dev/null || true
     done
-    pkill -f "cursor-agent-api" 2>/dev/null || true
     pkill -f "$APP_DIR/gemini_web2api.py" 2>/dev/null || true
     pkill -f "$APP_DIR/lb_gateway.py" 2>/dev/null || true
     pkill -x mihomo 2>/dev/null || true
@@ -80,7 +74,6 @@ echo "=================================================="
 echo "-> Main Gateway Port (CPA) : $CPA_PORT (Aggregator Direct)"
 echo "-> Gemflow Gateway Port    : $GEMFLOW_PORT (Dedicated Multi-Egress: 19001..)"
 echo "-> NVIDIA CPA Keys         : SOCKS5 Round-Robin (${NVIDIA_PROXY_PORT_COUNT} Egress Port(s))"
-echo "-> Cursor Proxy Port       : $CURSOR_PORT (Shared Egress: 127.0.0.1:$CURSOR_PROXY_PORT)"
 echo "-> Mihomo Web UI (Zashboard): 0.0.0.0:$MIHOMO_CONTROLLER_PORT/ui"
 echo "=================================================="
 
@@ -223,36 +216,7 @@ if [ "$ENABLE_GEMFLOW" = "true" ] || [ "$ENABLE_GEMFLOW" = "1" ]; then
     CHILD_PIDS="$CHILD_PIDS $!"
 fi
 
-# 3. 启动 Cursor CLI API Proxy 引擎 (Port 4646，复用现有 Mihomo listener)
-if [ "$ENABLE_CURSOR" = "true" ] || [ "$ENABLE_CURSOR" = "1" ]; then
-    echo "[Cursor] Launching cursor-agent-api on port $CURSOR_PORT (Proxy: http://127.0.0.1:$CURSOR_PROXY_PORT)..."
-    (
-        FAIL=0
-        while true; do
-            export PORT="$CURSOR_PORT"
-            export HTTP_PROXY="http://127.0.0.1:$CURSOR_PROXY_PORT"
-            export HTTPS_PROXY="http://127.0.0.1:$CURSOR_PROXY_PORT"
-            export ALL_PROXY="http://127.0.0.1:$CURSOR_PROXY_PORT"
-            export NO_PROXY="127.0.0.1,localhost"
-
-            if command -v cursor-agent-api >/dev/null 2>&1; then
-                cursor-agent-api run || true
-            elif [ -f "$APP_DIR/cursor_proxy/dist/index.js" ]; then
-                node "$APP_DIR/cursor_proxy/dist/index.js" || true
-            else
-                echo "[Cursor] Notice: cursor-agent-api command not found. Install via: npm i -g cursor-agent-api-proxy"
-                break
-            fi
-            FAIL=$((FAIL + 1))
-            if [ "$FAIL" -gt 6 ]; then BACKOFF=60; else BACKOFF=$((FAIL * 5)); fi
-            echo "[Cursor] Service exited (#$FAIL), restarting in ${BACKOFF}s..."
-            sleep "$BACKOFF"
-        done
-    ) &
-    CHILD_PIDS="$CHILD_PIDS $!"
-fi
-
-# 4. 启动主入口 CLIProxyAPI 网关
+# 3. 启动主入口 CLIProxyAPI 网关
 # 聚合网关本身不继承全局代理；NVIDIA 凭据通过配置内逐 key proxy-url 出站。
 if [ "$ENABLE_CPA" = "true" ] || [ "$ENABLE_CPA" = "1" ]; then
     echo "[CPA] Starting CLIProxyAPI frontend aggregator on port $CPA_PORT..."

@@ -52,7 +52,7 @@ case "$CMD" in
         systemctl status "$SERVICE_NAME" --no-pager || true
         echo ""
         echo "Listening Ports Check:"
-        ss -tulpn 2>/dev/null | grep -E "18317|8081|4646|9090" || netstat -tulpn 2>/dev/null | grep -E "18317|8081|4646|9090" || true
+        ss -tulpn 2>/dev/null | grep -E "18317|8081|9090" || netstat -tulpn 2>/dev/null | grep -E "18317|8081|9090" || true
         ;;
     logs)
         echo -e "${COLOR_CYAN}Tailing TokenFlow logs (Ctrl+C to exit)...${COLOR_RESET}"

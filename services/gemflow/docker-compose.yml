@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   gemflow:
-    image: registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
+    image: ghcr.io/akkunyo/gemflow:latest
     # 若需本地源码构建，从 Monorepo 根目录执行：
     # build:
     #   context: ../..

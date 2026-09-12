@@ -1,12 +1,11 @@
 services:
   tokenflow:
-    image: registry.cn-hangzhou.aliyuncs.com/zkyml/tokenflow:latest
+    image: ghcr.io/akkunyo/tokenflow:latest
     container_name: tokenflow
     restart: unless-stopped
     ports:
       - "18317:18317"   # CLIProxyAPI 聚合主入口
       - "8081:8081"     # gemflow 多出口粘滞网关
-      - "4646:4646"     # cursor-agent-api 代理
       - "9090:9090"     # Mihomo REST API 与 Zashboard Web 面板 (http://<ip>:9090/ui)
     environment:
       # CPA 配置内容 (或通过卷挂载 /app/config.yaml)
@@ -18,8 +17,6 @@ services:
       - ENABLE_NVIDIA_PROXY=true
       - NVIDIA_PROVIDER_NAMES=${NVIDIA_PROVIDER_NAMES:-nvidia}
       - DEBUG=false
-      # Cursor 配置 (可选)
-      - CURSOR_API_KEY=${CURSOR_API_KEY:-}
     volumes:
       - ./auth-dir:/home/user/app/auth-dir
       - ./config.yaml:/app/config.yaml:ro

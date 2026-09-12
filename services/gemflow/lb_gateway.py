@@ -38,6 +38,45 @@ MAX_SESSIONS = 50000    # 最大缓存会话数上限 (LRU 淘汰防止内存无
 FAIL_PENALTY_SEC = 20   # 故障节点冷却降权时间 (秒)
 PROBE_TIMEOUT = 5       # 单个出口 IP 探测源的超时 (秒)
 
+BUILD_VERSION = os.environ.get("BUILD_VERSION", "unknown")
+BUILD_TIME = os.environ.get("BUILD_TIME", "unknown")
+
+# 人机验证与阻断标记：检测 Google / Cloudflare 软失败 (HTTP 200 返回 CAPTCHA 页面)
+BOT_CHALLENGE_PATTERNS = (
+    b"captcha-form",
+    b"recaptcha",
+    b"g-recaptcha",
+    b"unusual traffic",
+    b"google.com/sorry",
+    b"/sorry/index",
+    b"cf-turnstile",
+    b"challenge-platform",
+)
+
+
+def is_bot_challenge(status_code, headers, body_prefix):
+    """
+    检测响应是否为 Google / Cloudflare 人机验证或阻断 HTML 页面。
+    OpenAI 兼容接口在 200 OK 下返回 HTML 或人机验证关键词属软失败，
+    必须识别并触发 Worker 故障降权与 failover 重试。
+    """
+    if not body_prefix:
+        return False
+    prefix_lower = body_prefix.lower()
+    for pattern in BOT_CHALLENGE_PATTERNS:
+        if pattern in prefix_lower:
+            return True
+
+    content_type = ""
+    for hk, hv in headers:
+        if hk.lower() == "content-type":
+            content_type = hv.lower()
+            break
+    if "text/html" in content_type:
+        if b"<html" in prefix_lower or b"<!doctype html" in prefix_lower or b"<head" in prefix_lower:
+            return True
+    return False
+
 
 def _env_timeout(name, default, minimum=1.0):
     """读取环境变量中的超时配置，非法值回退默认并告警"""
@@ -417,7 +456,52 @@ class LBProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path in ("/health", "/healthz"):
+            self._handle_health()
+            return
         self._proxy_request("GET")
+
+    def _handle_health(self):
+        """网关健康检查与运行时版本元数据"""
+        with LOCK:
+            total_workers = len(WORKERS)
+            healthy_workers = sum(
+                1 for w in WORKERS
+                if WORKER_STATUS.get(w["id"], {}).get("fail_count", 0) == 0
+            )
+            workers_info = [
+                {
+                    "id": w["id"],
+                    "port": w["port"],
+                    "proxy": w.get("proxy"),
+                    "active_conns": ACTIVE_CONNS.get(w["id"], 0),
+                    "fail_count": WORKER_STATUS.get(w["id"], {}).get("fail_count", 0),
+                }
+                for w in WORKERS
+            ]
+
+        data = {
+            "status": "healthy" if healthy_workers > 0 or total_workers == 0 else "degraded",
+            "version": BUILD_VERSION,
+            "build_time": BUILD_TIME,
+            "workers_total": total_workers,
+            "workers_healthy": healthy_workers,
+            "workers": workers_info,
+        }
+        payload = json.dumps(data, indent=2).encode("utf-8")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            if BUILD_VERSION != "unknown":
+                self.send_header("X-Gemflow-Version", BUILD_VERSION)
+            if BUILD_TIME != "unknown":
+                self.send_header("X-Gemflow-Build-Time", BUILD_TIME)
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ConnectionResetError, BrokenPipeError):
+            pass
 
     def do_POST(self):
         self._proxy_request("POST")
@@ -500,11 +584,43 @@ class LBProxyHandler(BaseHTTPRequestHandler):
                         hk.lower() == "content-length" for hk, _ in upstream_headers
                     )
 
+                    # 探测首块数据，拦截 Google CAPTCHA / 阻断软失败
+                    # 首块数据到达前尚未向客户端发送响应头，此时仍可安全切换 Worker 重试
+                    first_chunk = resp.read1(STREAM_CHUNK_SIZE)
+
+                    if is_bot_challenge(resp.status, upstream_headers, first_chunk):
+                        log_debug(
+                            f"[Req #{req_id}] Worker-{wid} returned bot challenge / CAPTCHA HTML (HTTP {resp.status}), "
+                            f"triggering failover..."
+                        )
+                        record_worker_failure(wid)
+                        exclude_wids.add(wid)
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                        if attempt < max_attempts - 1:
+                            continue
+
+                        # 重试次数耗尽，作为 429 报错下发
+                        self._send_json_error(
+                            429,
+                            "Google bot verification / CAPTCHA encountered across all retry workers",
+                            "rate_limit_error",
+                        )
+                        headers_sent = True
+                        return
+
                     self.send_response(resp.status)
                     for hk, hv in upstream_headers:
                         if hk.lower() not in SKIPPED_RESPONSE_HEADERS:
                             self.send_header(hk, hv)
                     self.send_header("Access-Control-Allow-Origin", "*")
+                    if BUILD_VERSION != "unknown":
+                        self.send_header("X-Gemflow-Version", BUILD_VERSION)
+                    if BUILD_TIME != "unknown":
+                        self.send_header("X-Gemflow-Build-Time", BUILD_TIME)
+                    self.send_header("X-Gemflow-Served-By", f"Worker-{wid}")
 
                     # 上游为流式响应 (无 Content-Length) 时，剥掉 Transfer-Encoding 后
                     # 必须显式关闭连接来界定响应结束，否则 HTTP/1.1 keep-alive 下
@@ -524,24 +640,39 @@ class LBProxyHandler(BaseHTTPRequestHandler):
                     client_gone = False
                     upstream_error = None
                     bytes_sent = 0
-                    try:
-                        while True:
-                            # 必须用 read1：read(n) 会阻塞直到凑满 n 字节或流结束，
-                            # 上游卡死时已到达的数据会滞留在缓冲区并随超时一起丢弃，
-                            # 下游因此看到"零负载"。read1 有多少给多少，逐块转发。
-                            chunk = resp.read1(STREAM_CHUNK_SIZE)
-                            if not chunk:
-                                break
+
+                    if first_chunk:
+                        try:
+                            self.wfile.write(first_chunk)
+                            self.wfile.flush()
+                            bytes_sent += len(first_chunk)
+                        except (ConnectionResetError, BrokenPipeError):
+                            client_gone = True
+
+                    if not client_gone and first_chunk:
+                        try:
+                            while True:
+                                # 必须用 read1：read(n) 会阻塞直到凑满 n 字节或流结束，
+                                # 上游卡死时已到达的数据会滞留在缓冲区并随超时一起丢弃，
+                                # 下游因此看到"零负载"。read1 有多少给多少，逐块转发。
+                                chunk = resp.read1(STREAM_CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                try:
+                                    self.wfile.write(chunk)
+                                    self.wfile.flush()
+                                    bytes_sent += len(chunk)
+                                except (ConnectionResetError, BrokenPipeError):
+                                    client_gone = True
+                                    break
+                        except Exception as stream_err:
+                            upstream_error = stream_err
+                        finally:
                             try:
-                                self.wfile.write(chunk)
-                                self.wfile.flush()
-                                bytes_sent += len(chunk)
-                            except (ConnectionResetError, BrokenPipeError):
-                                client_gone = True
-                                break
-                    except Exception as stream_err:
-                        upstream_error = stream_err
-                    finally:
+                                resp.close()
+                            except Exception:
+                                pass
+                    else:
                         try:
                             resp.close()
                         except Exception:
@@ -577,7 +708,7 @@ class LBProxyHandler(BaseHTTPRequestHandler):
                     return
 
                 except urllib.error.HTTPError as e:
-                    if e.code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1 and not headers_sent:
+                    if e.code in (403, 429, 500, 502, 503, 504) and attempt < max_attempts - 1 and not headers_sent:
                         log_debug(f"[Req #{req_id}] Worker-{wid} failed with HTTP {e.code}, triggering failover...")
                         record_worker_failure(wid)
                         exclude_wids.add(wid)

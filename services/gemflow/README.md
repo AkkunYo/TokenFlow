@@ -116,7 +116,7 @@ docker run -d -p 8081:8081 \
   -e WORKER_COUNT=4 \
   -e PROVIDER_URLS="https://example.com/api/v1/client/subscribe?token=xxx" \
   -e DEBUG=true \
-  --name gemflow registry.cn-hangzhou.aliyuncs.com/zkyml/gemflow:latest
+  --name gemflow ghcr.io/akkunyo/gemflow:latest
 
 # 2. Or using Docker Compose from the Monorepo root
 docker compose -f services/gemflow/docker-compose.yml up -d
